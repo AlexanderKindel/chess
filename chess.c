@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <setjmp.h>
 #include "platform_dependency.c"
 
 #define ARRAY_COUNT(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -116,9 +117,7 @@ typedef struct Piece
 {
     uint8_t square_index;
     uint8_t times_moved;
-    bool can_be_captured_en_passant : 1;
-    uint8_t piece_type : 3;
-    bool is_captured;
+    uint8_t piece_type;
 } Piece;
 
 #define RANK_COUNT 8
@@ -126,12 +125,20 @@ typedef struct Piece
 
 typedef struct Position
 {
-    uint16_t next_sibling_index;
-    uint16_t first_child_index;
+    union
+    {
+        uint16_t first_move_index;
+        uint16_t previous_leaf_index;
+    };
+    uint16_t parent_index;
+    uint16_t next_move_index;
     uint8_t squares[RANK_COUNT * FILE_COUNT];
     Piece pieces[32];
-    uint8_t captured_piece_counts;
-    bool reset_draw_by_50_count;
+    uint8_t en_passant_file;
+    uint8_t active_player_index : 1;
+    bool reset_draw_by_50_count : 1;
+    bool has_been_evaluated : 1;
+    bool is_leaf : 1;
 } Position;
 
 typedef struct BoardState
@@ -206,15 +213,16 @@ typedef struct Game
     Control main_window_controls[MAIN_WINDOW_CONTROL_COUNT];
     Window windows[WINDOW_COUNT];
     DPIData dpi_datas[WINDOW_COUNT];
-    uint16_t*selected_move_index;
     uint64_t times_left_as_of_last_move[2];
     uint64_t last_move_time;
     uint64_t time_increment;
-    int32_t cursor_offset;
     uint32_t square_size;
     uint32_t font_size;
     uint16_t seconds_left[2];
+    uint16_t selected_move_index;
     uint16_t current_position_index;
+    uint16_t first_leaf_index;
+    uint16_t next_leaf_to_evaluate_index;
     uint16_t index_of_first_free_pool_position;
     uint16_t pool_cursor;
     uint16_t state_bucket_count;
@@ -223,15 +231,15 @@ typedef struct Game
     uint16_t draw_by_50_count;
     DigitInput time_control[5];
     DigitInput increment[3];
-    uint8_t cursor_index;
     uint8_t state_generation;
-    uint8_t active_player_index;
     uint8_t selected_piece_index;
     uint8_t selected_digit_id;
+    bool run_engine;
 } Game;
 
 #define NULL_CONTROL UINT8_MAX
 #define NULL_PIECE 32
+#define NULL_SQUARE 64
 #define NULL_POSITION UINT16_MAX
 #define NULL_STATE UINT16_MAX
 #define WHITE_PLAYER_INDEX 0
@@ -261,6 +269,7 @@ typedef enum Player0PieceIndices
 #define SQUARE_INDEX(rank, file) (FILE_COUNT * (rank) + (file))
 #define EXTERNAL_STATE_NODES(game) ((game)->state_buckets + (game)->state_bucket_count)
 #define PLAYER_PIECES_INDEX(player_index) ((player_index) << 4)
+#define EN_PASSANT_RANK(player_index, forward_delta) KING_RANK(player_index) + ((forward_delta) << 2)
 
 size_t g_page_size;
 uint64_t g_counts_per_second;
@@ -371,23 +380,18 @@ bool archive_board_state(Game*game, BoardState*state)
     return true;
 }
 
-bool piece_attacks_square_along_diagonal(Position*position, uint8_t piece_index,
-    uint8_t square_index)
+bool piece_attacks_king_square_along_diagonal(Position*position, uint8_t piece_index,
+    uint8_t king_square_index)
 {
     Piece attacking_piece = position->pieces[piece_index];
-    int8_t rank_delta = RANK(square_index) - RANK(attacking_piece.square_index);
-    int8_t file_delta = FILE(square_index) - FILE(attacking_piece.square_index);
+    int8_t rank_delta = RANK(king_square_index) - RANK(attacking_piece.square_index);
+    int8_t file_delta = FILE(king_square_index) - FILE(attacking_piece.square_index);
     if (rank_delta != file_delta && rank_delta != -file_delta)
     {
         return false;
     }
-    uint8_t attacked_square = position->squares[square_index];
-    if (attacked_square != NULL_PIECE && PLAYER_INDEX(attacked_square) == PLAYER_INDEX(piece_index))
-    {
-        return false;
-    }
     int8_t square_index_increment;
-    if (RANK(attacking_piece.square_index) < RANK(square_index))
+    if (RANK(attacking_piece.square_index) < RANK(king_square_index))
     {
         square_index_increment = FILE_COUNT;
     }
@@ -395,7 +399,7 @@ bool piece_attacks_square_along_diagonal(Position*position, uint8_t piece_index,
     {
         square_index_increment = -FILE_COUNT;
     }
-    if (FILE(attacking_piece.square_index) < FILE(square_index))
+    if (FILE(attacking_piece.square_index) < FILE(king_square_index))
     {
         square_index_increment += 1;
     }
@@ -406,7 +410,7 @@ bool piece_attacks_square_along_diagonal(Position*position, uint8_t piece_index,
     while (true)
     {
         attacking_piece.square_index += square_index_increment;
-        if (RANK(attacking_piece.square_index) == RANK(square_index))
+        if (RANK(attacking_piece.square_index) == RANK(king_square_index))
         {
             return true;
         }
@@ -417,18 +421,14 @@ bool piece_attacks_square_along_diagonal(Position*position, uint8_t piece_index,
     }
 }
 
-bool piece_attacks_square_along_axis(Position*position, uint8_t piece_index, uint8_t square_index)
+bool piece_attacks_king_square_along_axis(Position*position, uint8_t piece_index,
+    uint8_t king_square_index)
 {
-    uint8_t attacked_square = position->squares[square_index];
-    if (attacked_square != NULL_PIECE && PLAYER_INDEX(attacked_square) == PLAYER_INDEX(piece_index))
-    {
-        return false;
-    }
     Piece attacking_piece = position->pieces[piece_index];
     int8_t square_index_increment;
-    if (RANK(square_index) == RANK(attacking_piece.square_index))
+    if (RANK(king_square_index) == RANK(attacking_piece.square_index))
     {
-        if (FILE(attacking_piece.square_index) < FILE(square_index))
+        if (FILE(attacking_piece.square_index) < FILE(king_square_index))
         {
             square_index_increment = 1;
         }
@@ -437,9 +437,9 @@ bool piece_attacks_square_along_axis(Position*position, uint8_t piece_index, uin
             square_index_increment = -1;
         }
     }
-    else if (FILE(square_index) == FILE(attacking_piece.square_index))
+    else if (FILE(king_square_index) == FILE(attacking_piece.square_index))
     {
-        if (RANK(attacking_piece.square_index) < RANK(square_index))
+        if (RANK(attacking_piece.square_index) < RANK(king_square_index))
         {
             square_index_increment = 8;
         }
@@ -455,7 +455,7 @@ bool piece_attacks_square_along_axis(Position*position, uint8_t piece_index, uin
     while (true)
     {
         attacking_piece.square_index += square_index_increment;
-        if (attacking_piece.square_index == square_index)
+        if (attacking_piece.square_index == king_square_index)
         {
             return true;
         }
@@ -475,81 +475,77 @@ uint8_t abs_delta(uint8_t coord_a, uint8_t coord_b)
     return coord_b - coord_a;
 }
 
-bool piece_attacks_square(Position*position, uint8_t piece_index, uint8_t square_index)
+bool player_attacks_king_square(Position*position, uint8_t player_index, uint8_t king_square_index)
 {
-    Piece attacking_piece = position->pieces[piece_index];
-    if (attacking_piece.is_captured)
+    uint8_t army_base_piece_index = 16 * player_index;
+    uint8_t max_piece_index = army_base_piece_index + 16;
+    for (size_t piece_index = army_base_piece_index; piece_index < max_piece_index; ++piece_index)
     {
-        return false;
-    }
-    switch (attacking_piece.piece_type)
-    {
-    case PIECE_PAWN:
-    {
-        if (abs_delta(FILE(square_index), FILE(attacking_piece.square_index)) == 1)
+        Piece attacking_piece = position->pieces[piece_index];
+        if (attacking_piece.square_index == NULL_SQUARE)
         {
-            uint8_t attacked_piece_index = position->squares[square_index];
-            if (attacked_piece_index != NULL_PIECE)
-            {
-                uint8_t attacking_player_index = PLAYER_INDEX(piece_index);
-                if (PLAYER_INDEX(attacked_piece_index) != attacking_player_index)
-                {
-                    int8_t attacking_forward_delta = FORWARD_DELTA(attacking_player_index);
-                    return (RANK(square_index) == RANK(attacking_piece.square_index) +
-                        attacking_forward_delta ||
-                        (RANK(square_index) == RANK(attacking_piece.square_index) &&
-                            position->squares[square_index +
-                                FILE_COUNT * attacking_forward_delta] == NULL_PIECE &&
-                            position->pieces[attacked_piece_index].can_be_captured_en_passant));
-                }
-            }
+            continue;
         }
-        return false;
-    }
-    case PIECE_BISHOP:
-    {
-        return piece_attacks_square_along_diagonal(position, piece_index, square_index);
-    }
-    case PIECE_KNIGHT:
-    {
-        uint8_t attacked_piece_index = position->squares[square_index];
-        if (attacked_piece_index != NULL_PIECE ||
-            PLAYER_INDEX(attacked_piece_index) != PLAYER_INDEX(piece_index))
+        switch (attacking_piece.piece_type)
         {
-            uint8_t rank_delta = abs_delta(RANK(square_index), RANK(attacking_piece.square_index));
-            uint8_t file_delta = abs_delta(FILE(square_index), FILE(attacking_piece.square_index));
+        case PIECE_PAWN:
+        {
+            uint8_t king_file = FILE(king_square_index);
+            if (abs_delta(king_file, FILE(attacking_piece.square_index)) == 1 &&
+                RANK(king_square_index) == RANK(attacking_piece.square_index) +
+                    FORWARD_DELTA(position->active_player_index))
+            {
+                return true;
+            }
+            break;
+        }
+        case PIECE_BISHOP:
+        {
+            if (piece_attacks_king_square_along_diagonal(position, piece_index, king_square_index))
+            {
+                return true;
+            }
+            break;
+        }
+        case PIECE_KING:
+        {
+            if (abs_delta(RANK(king_square_index), RANK(attacking_piece.square_index)) <= 1 &&
+                abs_delta(FILE(king_square_index), FILE(attacking_piece.square_index)) <= 1)
+            {
+                return true;
+            }
+            break;
+        }
+        case PIECE_KNIGHT:
+        {
+            uint8_t rank_delta =
+                abs_delta(RANK(king_square_index), RANK(attacking_piece.square_index));
+            uint8_t file_delta =
+                abs_delta(FILE(king_square_index), FILE(attacking_piece.square_index));
             if ((rank_delta == 2 && file_delta == 1) || (rank_delta == 1 && file_delta == 2))
             {
                 return true;
             }
+            break;
         }
-        return false;
-    }
-    case PIECE_ROOK:
-    {
-        return piece_attacks_square_along_axis(position, piece_index, square_index);
-    }
-    case PIECE_QUEEN:
-    {
-        return piece_attacks_square_along_diagonal(position, piece_index, square_index) ||
-            piece_attacks_square_along_axis(position, piece_index, square_index);
-    }
-    }
-    uint8_t attacked_piece_index = position->squares[square_index];
-    return (attacked_piece_index != NULL_PIECE ||
-        PLAYER_INDEX(attacked_piece_index) != PLAYER_INDEX(piece_index)) &&
-        abs_delta(RANK(square_index), RANK(attacking_piece.square_index)) <= 1 &&
-        abs_delta(FILE(square_index), FILE(attacking_piece.square_index)) <= 1;
-}
-
-bool player_attacks_square(Position*position, uint8_t player_index, uint8_t square_index)
-{
-    uint8_t army_base_piece_index = 16 * player_index;
-    for (size_t i = 0; i < 16; ++i)
-    {
-        if (piece_attacks_square(position, army_base_piece_index + i, square_index))
+        case PIECE_ROOK:
         {
-            return true;
+            if (piece_attacks_king_square_along_axis(position, piece_index, king_square_index))
+            {
+                return true;
+            }
+            break;
+        }
+        case PIECE_QUEEN:
+        {
+            if (piece_attacks_king_square_along_diagonal(position, piece_index,
+                king_square_index) ||
+                piece_attacks_king_square_along_axis(position, piece_index, king_square_index))
+            {
+                return true;
+            }
+            break;
+        }
         }
     }
     return false;
@@ -557,21 +553,13 @@ bool player_attacks_square(Position*position, uint8_t player_index, uint8_t squa
 
 bool player_is_checked(Position*position, uint8_t player_index)
 {
-    uint8_t king_square_index = position->pieces[KING_INDEX + 16 * player_index].square_index;
-    uint8_t opponent_base_piece_index = 16 * !player_index;
-    for (size_t i = 0; i < 16; ++i)
-    {
-        if (piece_attacks_square(position, opponent_base_piece_index + i, king_square_index))
-        {
-            return true;
-        }
-    }
-    return false;
+    return player_attacks_king_square(position, !player_index,
+        position->pieces[KING_INDEX + 16 * player_index].square_index);
 }
 
 void capture_piece(Position*position, uint8_t piece_index)
 {
-    position->pieces[piece_index].is_captured = true;
+    position->pieces[piece_index].square_index = NULL_SQUARE;
     position->reset_draw_by_50_count = true;
 }
 
@@ -584,12 +572,19 @@ void move_piece_to_square(Position*position, uint8_t piece_index, uint8_t square
     ++piece->times_moved;
 }
 
+jmp_buf out_of_memory_jump_buffer;
+
 uint16_t allocate_position(Game*game)
 {
-    Position*new_position;
     uint16_t new_position_index;
+    Position*new_position;
     if (game->index_of_first_free_pool_position == NULL_POSITION)
     {
+        if (game->pool_cursor == NULL_POSITION)
+        {
+            game->run_engine = false;
+            longjmp(out_of_memory_jump_buffer, 1);
+        }
         new_position_index = game->pool_cursor;
         new_position = game->position_pool + new_position_index;
         COMMIT_MEMORY(new_position, g_page_size);
@@ -599,114 +594,217 @@ uint16_t allocate_position(Game*game)
     {
         new_position_index = game->index_of_first_free_pool_position;
         new_position = game->position_pool + new_position_index;
-        game->index_of_first_free_pool_position = new_position->first_child_index;
+        if (new_position->parent_index == NULL_POSITION)
+        {
+            game->index_of_first_free_pool_position = new_position->next_move_index;
+        }
+        else if (new_position->next_move_index == NULL_POSITION)
+        {
+            game->index_of_first_free_pool_position = new_position->parent_index;
+        }
+        else if (game->position_pool[new_position->next_move_index].parent_index ==
+            new_position->parent_index)
+        {
+            game->index_of_first_free_pool_position = new_position->next_move_index;
+        }
+        else
+        {
+            game->position_pool[new_position->parent_index].next_move_index =
+                new_position->next_move_index;
+            game->index_of_first_free_pool_position = new_position->parent_index;
+        }
     }
+    new_position->en_passant_file = FILE_COUNT;
+    new_position->reset_draw_by_50_count = false;
+    new_position->has_been_evaluated = false;
+    new_position->is_leaf = true;
     return new_position_index;
 }
 
-Position*add_position_duplicate_as_child(Game*game, Position*position, Position*parent)
+uint16_t copy_position(Game*game, uint16_t position_index)
 {
-    uint16_t new_position_index = allocate_position(game);
-    Position*new_position = game->position_pool + new_position_index;
-    memcpy(&new_position->squares, &position->squares, sizeof(position->squares));
-    memcpy(&new_position->pieces, &position->pieces, sizeof(position->pieces));
-    new_position->next_sibling_index = parent->first_child_index;
-    new_position->first_child_index = NULL_POSITION;
-    new_position->reset_draw_by_50_count = false;
-    parent->first_child_index = new_position_index;
-    return new_position;
+    Position*position = game->position_pool + position_index;
+    uint16_t copy_index = allocate_position(game);
+    Position*copy = game->position_pool + copy_index;
+    memcpy(&copy->squares, &position->squares, sizeof(position->squares));
+    memcpy(&copy->pieces, &position->pieces, sizeof(position->pieces));
+    return copy_index;
 }
 
-Position*add_move(Game*game, Position*position, uint8_t piece_index,
+void add_move(Game*game, uint16_t position_index, uint16_t move_index)
+{
+    Position*position = game->position_pool + position_index;
+    Position*move = game->position_pool + move_index;
+    move->parent_index = position_index;
+    if (position->is_leaf)
+    {
+        move->previous_leaf_index = position->previous_leaf_index;
+        move->next_move_index = position->next_move_index;
+        if (move->next_move_index != NULL_POSITION)
+        {
+            game->position_pool[move->next_move_index].previous_leaf_index = move_index;
+        }
+        position->is_leaf = false;
+    }
+    else
+    {
+        Position*next_move = game->position_pool + position->first_move_index;
+        move->previous_leaf_index = next_move->previous_leaf_index;
+        move->next_move_index = position->first_move_index;
+        next_move->previous_leaf_index = move_index;
+    }
+    if (move->previous_leaf_index == NULL_POSITION)
+    {
+        game->first_leaf_index = move_index;
+    }
+    else
+    {
+        game->position_pool[move->previous_leaf_index].next_move_index = move_index;
+    }
+    position->first_move_index = move_index;
+    move->active_player_index = !position->active_player_index;
+}
+
+void free_position(Game*game, uint16_t position_index)
+{
+    Position*position = game->position_pool + position_index;
+    position->parent_index = NULL_POSITION;
+    position->next_move_index = game->index_of_first_free_pool_position;
+    game->index_of_first_free_pool_position = position_index;
+}
+
+bool add_move_if_not_king_hang(Game*game, uint16_t position_index, uint16_t move_index)
+{
+    Position*move = game->position_pool + move_index;
+    if (player_is_checked(move, game->position_pool[position_index].active_player_index))
+    {
+        free_position(game, move_index);
+        return false;
+    }
+    else
+    {
+        add_move(game, position_index, move_index);
+        return true;
+    }
+}
+
+Position*move_piece_and_add_as_move(Game*game, uint16_t position_index, uint8_t piece_index,
     uint8_t destination_square_index)
 {
+    Position*position = game->position_pool + position_index;
     uint8_t destination_square = position->squares[destination_square_index];
     if (destination_square == NULL_PIECE)
     {
-        Position*move = add_position_duplicate_as_child(game, position, position);
+        uint16_t move_index = copy_position(game, position_index);
+        Position*move = game->position_pool + move_index;
         move_piece_to_square(move, piece_index, destination_square_index);
+        add_move_if_not_king_hang(game, position_index, move_index);
         return move;
     }
-    else if (PLAYER_INDEX(destination_square) != PLAYER_INDEX(piece_index))
+    else if (PLAYER_INDEX(destination_square) != position->active_player_index)
     {
-        Position*move = add_position_duplicate_as_child(game, position, position);
+        uint16_t move_index = copy_position(game, position_index);
+        Position*move = game->position_pool + move_index;
         capture_piece(move, destination_square);
         move_piece_to_square(move, piece_index, destination_square_index);
+        add_move_if_not_king_hang(game, position_index, move_index);
     }
     return 0;
 }
 
-void add_promotion_options(Game*game, Position*position, Position*promotion, uint8_t piece_index,
-    uint8_t back_rank)
+uint16_t add_position_copy_as_move(Game*game, uint16_t position_index,
+    uint16_t position_to_copy_index)
 {
-    if (RANK(promotion->pieces[piece_index].square_index) == back_rank)
-    {
-        promotion->pieces[piece_index].piece_type = PIECE_ROOK;
-        promotion = add_position_duplicate_as_child(game, promotion, position);
-        promotion->pieces[piece_index].piece_type = PIECE_KNIGHT;
-        promotion->reset_draw_by_50_count = true;
-        promotion = add_position_duplicate_as_child(game, promotion, position);
-        promotion->pieces[piece_index].piece_type = PIECE_BISHOP;
-        promotion->reset_draw_by_50_count = true;
-        promotion = add_position_duplicate_as_child(game, promotion, position);
-        promotion->pieces[piece_index].piece_type = PIECE_QUEEN;
-        promotion->reset_draw_by_50_count = true;
-    }
+    uint16_t copy_index = copy_position(game, position_to_copy_index);
+    add_move(game, position_index, copy_index);
+    return copy_index;
 }
 
-void add_diagonal_pawn_move(Game*game, Position*position, uint8_t piece_index,
-    uint8_t destination_square_index, uint8_t back_rank)
+void add_forward_pawn_move_with_promotions(Game*game, uint16_t position_index,
+    uint16_t promotion_index, uint8_t piece_index)
 {
-    uint8_t destination_square = position->squares[destination_square_index];
-    if (destination_square == NULL_PIECE)
+    if (add_move_if_not_king_hang(game, position_index, promotion_index))
     {
-        uint8_t en_passant_capturable_square_index = position->pieces[piece_index].square_index - 1;
-        uint8_t en_passant_capturable_square =
-            position->squares[en_passant_capturable_square_index];
-        if (en_passant_capturable_square != NULL_PIECE &&
-            position->pieces[en_passant_capturable_square].can_be_captured_en_passant)
+        Position*promotion = game->position_pool + promotion_index;
+        if (RANK(promotion->pieces[piece_index].square_index) ==
+            KING_RANK(!PLAYER_INDEX(piece_index)))
         {
-            Position*move = add_position_duplicate_as_child(game, position, position);
-            capture_piece(move, en_passant_capturable_square);
-            move_piece_to_square(move, piece_index, destination_square_index);
+            promotion->pieces[piece_index].piece_type = PIECE_ROOK;
+            promotion = game->position_pool +
+                add_position_copy_as_move(game, position_index, promotion_index);
+            promotion->pieces[piece_index].piece_type = PIECE_KNIGHT;
+            promotion->reset_draw_by_50_count = true;
+            promotion = game->position_pool +
+                add_position_copy_as_move(game, position_index, promotion_index);
+            promotion->pieces[piece_index].piece_type = PIECE_BISHOP;
+            promotion->reset_draw_by_50_count = true;
+            promotion = game->position_pool +
+                add_position_copy_as_move(game, position_index, promotion_index);
+            promotion->pieces[piece_index].piece_type = PIECE_QUEEN;
+            promotion->reset_draw_by_50_count = true;
         }
     }
-    else if (PLAYER_INDEX(destination_square) != PLAYER_INDEX(piece_index))
+}
+
+void add_diagonal_pawn_move(Game*game, uint16_t position_index, uint8_t piece_index, uint8_t file)
+{
+    Position*position = game->position_pool + position_index;
+    uint8_t rank = RANK(position->pieces[piece_index].square_index);
+    int8_t forward_delta = FORWARD_DELTA(position->active_player_index);
+    uint8_t destination_square_index = SQUARE_INDEX(rank + forward_delta, file);
+    if (file == position->en_passant_file && rank ==
+        EN_PASSANT_RANK(position->active_player_index, forward_delta))
     {
-        Position*move = add_position_duplicate_as_child(game, position, position);
-        capture_piece(move, destination_square);
+        uint16_t move_index = copy_position(game, position_index);
+        Position*move = game->position_pool + move_index;
+        uint8_t en_passant_square_index = SQUARE_INDEX(rank, file);
+        capture_piece(move, position->squares[en_passant_square_index]);
         move_piece_to_square(move, piece_index, destination_square_index);
-        add_promotion_options(game, position, move, piece_index, back_rank);
+        move->squares[en_passant_square_index] = NULL_PIECE;
+        add_move_if_not_king_hang(game, position_index, move_index);
+    }
+    else
+    {
+        uint8_t destination_square = position->squares[destination_square_index];
+        if (PLAYER_INDEX(destination_square) == !position->active_player_index)
+        {
+            uint16_t move_index = copy_position(game, position_index);
+            Position*move = game->position_pool + move_index;
+            capture_piece(move, destination_square);
+            move_piece_to_square(move, piece_index, destination_square_index);
+            add_forward_pawn_move_with_promotions(game, position_index, move_index, piece_index);
+        }
     }
 }
 
-void add_half_diagonal_moves(Game*game, Position*position, uint8_t piece_index, int8_t rank_delta,
-    int8_t file_delta)
+void add_half_diagonal_moves(Game*game, uint16_t position_index, uint8_t piece_index,
+    int8_t rank_delta, int8_t file_delta)
 {
-    uint8_t player_index = PLAYER_INDEX(piece_index);
-    uint8_t destination_square_index = position->pieces[piece_index].square_index;
+    uint8_t destination_square_index =
+        game->position_pool[position_index].pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
     do
     {
         destination_rank += rank_delta;
         destination_file += file_delta;
-    } while (destination_rank < 8 && destination_file < 8 && add_move(game, position, piece_index,
-        SQUARE_INDEX(destination_rank, destination_file)));
+    } while (destination_rank < 8 && destination_file < 8 && move_piece_and_add_as_move(game,
+        position_index, piece_index, SQUARE_INDEX(destination_rank, destination_file)));
 }
 
-void add_diagonal_moves(Game*game, Position*position, uint8_t piece_index)
+void add_diagonal_moves(Game*game, uint16_t position_index, uint8_t piece_index)
 {
-    add_half_diagonal_moves(game, position, piece_index, 1, 1);
-    add_half_diagonal_moves(game, position, piece_index, 1, -1);
-    add_half_diagonal_moves(game, position, piece_index, -1, 1);
-    add_half_diagonal_moves(game, position, piece_index, -1, -1);
+    add_half_diagonal_moves(game, position_index, piece_index, 1, 1);
+    add_half_diagonal_moves(game, position_index, piece_index, 1, -1);
+    add_half_diagonal_moves(game, position_index, piece_index, -1, 1);
+    add_half_diagonal_moves(game, position_index, piece_index, -1, -1);
 }
 
-void add_half_horizontal_moves(Game*game, Position*position, uint8_t piece_index, int8_t delta,
-    bool loses_castling_rights)
+void add_half_horizontal_moves(Game*game, uint16_t position_index, uint8_t piece_index,
+    int8_t delta, bool loses_castling_rights)
 {
-    uint8_t destination_square_index = position->pieces[piece_index].square_index;
+    uint8_t destination_square_index =
+        game->position_pool[position_index].pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
     while (true)
@@ -716,20 +814,24 @@ void add_half_horizontal_moves(Game*game, Position*position, uint8_t piece_index
         {
             break;
         }
-        Position*move =
-            add_move(game, position, piece_index, SQUARE_INDEX(destination_rank, destination_file));
-        if (!move)
+        Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+            SQUARE_INDEX(destination_rank, destination_file));
+        if (move)
+        {
+            move->reset_draw_by_50_count |= loses_castling_rights;
+        }
+        else
         {
             break;
         }
-        move->reset_draw_by_50_count |= loses_castling_rights;
     }
 }
 
-void add_half_vertical_moves(Game*game, Position*position, uint8_t piece_index, int8_t delta,
+void add_half_vertical_moves(Game*game, uint16_t position_index, uint8_t piece_index, int8_t delta,
     bool loses_castling_rights)
 {
-    uint8_t destination_square_index = position->pieces[piece_index].square_index;
+    uint8_t destination_square_index =
+        game->position_pool[position_index].pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
     while (true)
@@ -739,23 +841,26 @@ void add_half_vertical_moves(Game*game, Position*position, uint8_t piece_index, 
         {
             break;
         }
-        Position*move =
-            add_move(game, position, piece_index, SQUARE_INDEX(destination_rank, destination_file));
-        if (!move)
+        Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+            SQUARE_INDEX(destination_rank, destination_file));
+        if (move)
+        {
+            move->reset_draw_by_50_count |= loses_castling_rights;
+        }
+        else
         {
             break;
         }
-        move->reset_draw_by_50_count |= loses_castling_rights;
     }
 }
 
-void add_moves_along_axes(Game*game, Position*position, uint8_t piece_index,
+void add_moves_along_axes(Game*game, uint16_t position_index, uint8_t piece_index,
     bool loses_castling_rights)
 {
-    add_half_horizontal_moves(game, position, piece_index, 1, loses_castling_rights);
-    add_half_horizontal_moves(game, position, piece_index, -1, loses_castling_rights);
-    add_half_vertical_moves(game, position, piece_index, 1, loses_castling_rights);
-    add_half_vertical_moves(game, position, piece_index, -1, loses_castling_rights);
+    add_half_horizontal_moves(game, position_index, piece_index, 1, loses_castling_rights);
+    add_half_horizontal_moves(game, position_index, piece_index, -1, loses_castling_rights);
+    add_half_vertical_moves(game, position_index, piece_index, 1, loses_castling_rights);
+    add_half_vertical_moves(game, position_index, piece_index, -1, loses_castling_rights);
 }
 
 size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king_rank_or_file)
@@ -776,33 +881,38 @@ size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king
     return count;
 }
 
-void free_position(Game*game, uint16_t position_index)
+void get_moves(Game*game, uint16_t position_index)
 {
     Position*position = game->position_pool + position_index;
-    if (position->next_sibling_index != NULL_POSITION)
+    uint16_t original_previous_leaf_index = position->previous_leaf_index;
+    uint16_t original_next_leaf_index = position->next_move_index;
+    if (setjmp(out_of_memory_jump_buffer))
     {
-        free_position(game, position->next_sibling_index);
+        uint16_t next_move_index = position->first_move_index;
+        do
+        {
+            free_position(game, next_move_index);
+            next_move_index = game->position_pool[next_move_index].next_move_index;
+        } while (next_move_index != NULL_POSITION);
+        position->is_leaf = true;
+        position->previous_leaf_index = original_previous_leaf_index;
+        if (original_previous_leaf_index != NULL_POSITION)
+        {
+            game->position_pool[original_previous_leaf_index].next_move_index = position_index;
+        }
+        position->next_move_index = original_next_leaf_index;
+        if (original_next_leaf_index != NULL_POSITION)
+        {
+            game->position_pool[original_next_leaf_index].previous_leaf_index = position_index;
+        }
+        return;
     }
-    if (position->first_child_index != NULL_POSITION)
-    {
-        free_position(game, position->first_child_index);
-    }
-    position->first_child_index = game->index_of_first_free_pool_position;
-    game->index_of_first_free_pool_position = position_index;
-}
-
-void get_moves(Game*game, Position*position, uint8_t player_index)
-{
-    uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
+    uint8_t player_pieces_index = PLAYER_PIECES_INDEX(position->active_player_index);
     uint8_t max_piece_index = player_pieces_index + 16;
-    for (size_t piece_index = player_pieces_index + 8; piece_index < max_piece_index; ++piece_index)
-    {
-        position->pieces[piece_index].can_be_captured_en_passant = false;
-    }
     for (uint8_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
     {
         Piece piece = position->pieces[piece_index];
-        if (piece.is_captured)
+        if (piece.square_index == NULL_SQUARE)
         {
             continue;
         }
@@ -810,39 +920,41 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
         {
         case PIECE_PAWN:
         {
-            int8_t forward_delta = FORWARD_DELTA(player_index);
-            uint8_t back_rank = KING_RANK(!player_index);
-            if (FILE(piece.square_index))
+            int8_t forward_delta = FORWARD_DELTA(position->active_player_index);
+            uint8_t file = FILE(piece.square_index);
+            if (file)
             {
-                add_diagonal_pawn_move(game, position, piece_index,
-                    piece.square_index + forward_delta * FILE_COUNT - 1, back_rank);
+                add_diagonal_pawn_move(game, position_index, piece_index, file - 1);
             }
-            if (FILE(piece.square_index) < 7)
+            if (file < 7)
             {
-                add_diagonal_pawn_move(game, position, piece_index,
-                    piece.square_index + forward_delta * FILE_COUNT + 1, back_rank);
+                add_diagonal_pawn_move(game, position_index, piece_index, file + 1);
             }
             uint8_t destination_square_index = piece.square_index + forward_delta * FILE_COUNT;
             if (position->squares[destination_square_index] == NULL_PIECE)
             {
-                Position*move = add_position_duplicate_as_child(game, position, position);
+                uint16_t move_index = copy_position(game, position_index);
+                Position*move = game->position_pool + move_index;
                 move_piece_to_square(move, piece_index, destination_square_index);
                 move->reset_draw_by_50_count = true;
                 destination_square_index += forward_delta * FILE_COUNT;
-                add_promotion_options(game, position, move, piece_index, back_rank);
+                add_forward_pawn_move_with_promotions(game, position_index, move_index,
+                    piece_index);
                 if (!piece.times_moved && position->squares[destination_square_index] == NULL_PIECE)
                 {
-                    move = add_position_duplicate_as_child(game, position, position);
+                    move_index = copy_position(game, position_index);
+                    move = game->position_pool + move_index;
                     move_piece_to_square(move, piece_index, destination_square_index);
                     move->reset_draw_by_50_count = true;
-                    move->pieces[piece_index].can_be_captured_en_passant = true;
+                    move->en_passant_file = file;
+                    add_move_if_not_king_hang(game, position_index, move_index);
                 }
             }
             break;
         }
         case PIECE_BISHOP:
         {
-            add_diagonal_moves(game, position, piece_index);
+            add_diagonal_moves(game, position_index, piece_index);
             break;
         }
         case PIECE_KNIGHT:
@@ -854,21 +966,25 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
             {
                 if (rank > 1)
                 {
-                    add_move(game, position, piece_index, SQUARE_INDEX(rank - 2, file - 1));
+                    move_piece_and_add_as_move(game, position_index, piece_index,
+                        SQUARE_INDEX(rank - 2, file - 1));
                 }
                 if (rank < 6)
                 {
-                    add_move(game, position, piece_index, SQUARE_INDEX(rank + 2, file - 1));
+                    move_piece_and_add_as_move(game, position_index, piece_index,
+                        SQUARE_INDEX(rank + 2, file - 1));
                 }
                 if (file > 1)
                 {
                     if (rank > 0)
                     {
-                        add_move(game, position, piece_index, SQUARE_INDEX(rank - 1, file - 2));
+                        move_piece_and_add_as_move(game, position_index, piece_index,
+                            SQUARE_INDEX(rank - 1, file - 2));
                     }
                     if (rank < 7)
                     {
-                        add_move(game, position, piece_index, SQUARE_INDEX(rank + 1, file - 2));
+                        move_piece_and_add_as_move(game, position_index, piece_index,
+                            SQUARE_INDEX(rank + 1, file - 2));
                     }
                 }
             }
@@ -876,21 +992,25 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
             {
                 if (rank > 1)
                 {
-                    add_move(game, position, piece_index, SQUARE_INDEX(rank - 2, file + 1));
+                    move_piece_and_add_as_move(game, position_index, piece_index,
+                        SQUARE_INDEX(rank - 2, file + 1));
                 }
                 if (rank < 6)
                 {
-                    add_move(game, position, piece_index, SQUARE_INDEX(rank + 2, file + 1));
+                    move_piece_and_add_as_move(game, position_index, piece_index,
+                        SQUARE_INDEX(rank + 2, file + 1));
                 }
                 if (file < 6)
                 {
                     if (rank > 0)
                     {
-                        add_move(game, position, piece_index, SQUARE_INDEX(rank - 1, file + 2));
+                        move_piece_and_add_as_move(game, position_index, piece_index,
+                            SQUARE_INDEX(rank - 1, file + 2));
                     }
                     if (rank < 7)
                     {
-                        add_move(game, position, piece_index, SQUARE_INDEX(rank + 1, file + 2));
+                        move_piece_and_add_as_move(game, position_index, piece_index, 
+                            SQUARE_INDEX(rank + 1, file + 2));
                     }
                 }
             }
@@ -898,14 +1018,14 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
         }
         case PIECE_ROOK:
         {
-            add_moves_along_axes(game, position, piece_index, !piece.times_moved &&
-                !position->pieces[(player_index << 4) + KING_INDEX].times_moved);
+            add_moves_along_axes(game, position_index, piece_index, !piece.times_moved &&
+                !position->pieces[(position->active_player_index << 4) + KING_INDEX].times_moved);
             break;
         }
         case PIECE_QUEEN:
         {
-            add_diagonal_moves(game, position, piece_index);
-            add_moves_along_axes(game, position, piece_index, false);
+            add_diagonal_moves(game, position_index, piece_index);
+            add_moves_along_axes(game, position_index, piece_index, false);
             break;
         }
         case PIECE_KING:
@@ -925,7 +1045,7 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
             {
                 for (size_t file_index = 0; file_index < move_file_count; ++file_index)
                 {
-                    Position*move = add_move(game, position, piece_index, 
+                    Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
                         SQUARE_INDEX(move_ranks[rank_index], move_files[file_index]));
                     if (move)
                     {
@@ -934,26 +1054,33 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
                 }
             }
             if (!piece.times_moved &&
-                !player_attacks_square(position, !player_index, piece.square_index))
+                !player_attacks_king_square(position, !position->active_player_index,
+                    piece.square_index))
             {
                 if (!position->pieces[a_rook_index].times_moved &&
                     position->squares[piece.square_index - 1] == NULL_PIECE &&
                     position->squares[piece.square_index - 2] == NULL_PIECE &&
                     position->squares[piece.square_index - 3] == NULL_PIECE &&
-                    !player_attacks_square(position, !player_index, piece.square_index - 1) &&
-                    !player_attacks_square(position, !player_index, piece.square_index - 2))
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index - 1) &&
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index - 2))
                 {
-                    Position*move = add_move(game, position, piece_index, piece.square_index - 2);
+                    Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+                        piece.square_index - 2);
                     move->reset_draw_by_50_count = true;
                     move_piece_to_square(move, a_rook_index, piece.square_index - 1);
                 }
                 if (!position->pieces[h_rook_index].times_moved &&
                     position->squares[piece.square_index + 1] == NULL_PIECE &&
                     position->squares[piece.square_index + 2] == NULL_PIECE &&
-                    !player_attacks_square(position, !player_index, piece.square_index + 1) &&
-                    !player_attacks_square(position, !player_index, piece.square_index + 2))
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index + 1) &&
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index + 2))
                 {
-                    Position*move = add_move(game, position, piece_index, piece.square_index + 2);
+                    Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+                        piece.square_index + 2);
                     move->reset_draw_by_50_count = true;
                     move_piece_to_square(move, h_rook_index, piece.square_index + 1);
                 }
@@ -961,34 +1088,24 @@ void get_moves(Game*game, Position*position, uint8_t player_index)
         }
         }
     }
-    uint16_t*move_index = &position->first_child_index;
-    while (*move_index != NULL_POSITION)
-    {
-        Position*move = game->position_pool + *move_index;
-        if (player_is_checked(move, player_index))
-        {
-            uint16_t next_move_index = move->next_sibling_index;
-            move->next_sibling_index = NULL_POSITION;
-            free_position(game, *move_index);
-            *move_index = next_move_index;
-        }
-        else
-        {
-            move_index = &move->next_sibling_index;
-        }
-    }
+    position->has_been_evaluated = true;
 }
 
-bool make_position_current(Game*game, uint16_t position_index)
+bool make_selected_move_current(Game*game)
 {
-    Position*position = game->position_pool + position_index;
+    game->current_position_index = game->selected_move_index;
+    Position*position = game->position_pool + game->current_position_index;
     if (position->reset_draw_by_50_count)
     {
         game->draw_by_50_count = 0;
         ++game->state_generation;
     }
     ++game->draw_by_50_count;
-    get_moves(game, position, game->active_player_index);
+    game->next_leaf_to_evaluate_index = position->next_move_index;
+    if (!position->has_been_evaluated)
+    {
+        get_moves(game, game->current_position_index);
+    }
     BoardState state = { 0 };
     uint64_t square_mask_digit = 1;
     size_t square_hash_index = 0;
@@ -1001,7 +1118,7 @@ bool make_position_current(Game*game, uint16_t position_index)
             if (square != NULL_PIECE)
             {
                 uint8_t square_hash = position->pieces[square].piece_type +
-                    PIECE_TYPE_COUNT * PLAYER_INDEX(square) + game->active_player_index;
+                    PIECE_TYPE_COUNT * PLAYER_INDEX(square) + position->active_player_index;
                 if (use_high_bits)
                 {
                     state.occupied_square_hashes[square_hash_index] |= square_hash << 4;
@@ -1010,8 +1127,7 @@ bool make_position_current(Game*game, uint16_t position_index)
                 }
                 else
                 {
-                    state.occupied_square_hashes[square_hash_index] |=
-                        square_hash;
+                    state.occupied_square_hashes[square_hash_index] |= square_hash;
                     use_high_bits = true;
                 }
                 state.square_mask |= square_mask_digit;
@@ -1019,7 +1135,6 @@ bool make_position_current(Game*game, uint16_t position_index)
             square_mask_digit = square_mask_digit << 1;
         }
     }
-    game->current_position_index = position_index;
     return archive_board_state(game, &state);
 }
 
@@ -1143,33 +1258,60 @@ UpdateTimerStatus update_timer(Game*game)
     UpdateTimerStatus out = UPDATE_TIMER_CONTINUE;
     uint64_t time_since_last_move = get_time() - game->last_move_time;
     uint16_t new_seconds_left;
-    if (time_since_last_move >= game->times_left_as_of_last_move[game->active_player_index])
+    uint8_t active_player_index =
+        game->position_pool[game->current_position_index].active_player_index;
+    if (time_since_last_move >= game->times_left_as_of_last_move[active_player_index])
     {
         new_seconds_left = 0;
         out |= UPDATE_TIMER_TIME_OUT;
     }
     else
     {
-        new_seconds_left = (game->times_left_as_of_last_move[game->active_player_index] -
+        new_seconds_left = (game->times_left_as_of_last_move[active_player_index] -
             time_since_last_move) / g_counts_per_second;
     }
-    if (new_seconds_left != game->seconds_left[game->active_player_index])
+    if (new_seconds_left != game->seconds_left[active_player_index])
     {
-        game->seconds_left[game->active_player_index] = new_seconds_left;
+        game->seconds_left[active_player_index] = new_seconds_left;
         out |= UPDATE_TIMER_REDRAW;
     }
     return out;
 }
 
-GameStatus make_selected_move_current(Game*game)
+void do_engine_iteration(Game*game)
+{
+    if (game->run_engine)
+    {
+        uint16_t position_to_evaluate_index = game->next_leaf_to_evaluate_index;
+        Position*position;
+        while (true)
+        {
+            if (position_to_evaluate_index == NULL_POSITION)
+            {
+                position_to_evaluate_index = game->first_leaf_index;
+            }
+            position = game->position_pool + position_to_evaluate_index;
+            if (!position->has_been_evaluated)
+            {
+                break;
+            }
+            position_to_evaluate_index = position->next_move_index;
+        }
+        game->next_leaf_to_evaluate_index = position->next_move_index;
+        get_moves(game, position_to_evaluate_index);
+    }
+}
+
+GameStatus end_turn(Game*game)
 {
     uint64_t move_time = get_time();
     uint64_t time_since_last_move = move_time - game->last_move_time;
-    uint64_t*time_left_as_of_last_move =
-        game->times_left_as_of_last_move + game->active_player_index;
+    uint8_t active_player_index =
+        game->position_pool[game->current_position_index].active_player_index;
+    uint64_t*time_left_as_of_last_move = game->times_left_as_of_last_move + active_player_index;
     if (time_since_last_move >= *time_left_as_of_last_move)
     {
-        game->seconds_left[game->active_player_index] = 0;
+        game->seconds_left[active_player_index] = 0;
         return STATUS_TIME_OUT;
     }
     *time_left_as_of_last_move -= time_since_last_move;
@@ -1181,18 +1323,15 @@ GameStatus make_selected_move_current(Game*game)
     {
         *time_left_as_of_last_move = g_max_time;
     }
-    game->seconds_left[game->active_player_index] =
-        *time_left_as_of_last_move / g_counts_per_second;
+    game->seconds_left[active_player_index] = *time_left_as_of_last_move / g_counts_per_second;
     game->last_move_time = move_time;
-    uint32_t old_current_position_index = game->current_position_index;
-    game->active_player_index = !game->active_player_index;
     game->selected_piece_index = NULL_PIECE;
-    if (make_position_current(game, *game->selected_move_index))
+    if (make_selected_move_current(game))
     {
         Position*move = game->position_pool + game->current_position_index;
-        if (move->first_child_index == NULL_POSITION)
+        if (move->is_leaf)
         {
-            if (player_is_checked(move, game->active_player_index))
+            if (player_is_checked(move, move->active_player_index))
             {
                 return STATUS_CHECKMATE;
             }
@@ -1203,9 +1342,69 @@ GameStatus make_selected_move_current(Game*game)
         }
         else
         {
-            *game->selected_move_index = move->next_sibling_index;
-            move->next_sibling_index = NULL_POSITION;
-            free_position(game, old_current_position_index);
+            Position*parent_position = game->position_pool + move->parent_index;
+            if (move->previous_leaf_index == NULL_POSITION)
+            {
+                parent_position->first_move_index = move->next_move_index;
+            }
+            else
+            {
+                Position*previous_leaf = game->position_pool + move->previous_leaf_index;
+                if (previous_leaf->parent_index == move->parent_index)
+                {
+                    previous_leaf->next_move_index = move->next_move_index;
+                }
+                else
+                {
+                    parent_position->first_move_index = move->next_move_index;
+                }
+            }
+            move->next_move_index = NULL_POSITION;
+            if (parent_position->first_move_index == NULL_POSITION)
+            {
+                parent_position->next_move_index = game->index_of_first_free_pool_position;
+                game->index_of_first_free_pool_position = move->parent_index;
+            }
+            else
+            {
+                Position*subtree_leaf = game->position_pool + parent_position->first_move_index;
+                while (true)
+                {
+                    if (subtree_leaf->next_move_index == NULL_POSITION ||
+                        game->position_pool[subtree_leaf->next_move_index].parent_index !=
+                            move->parent_index)
+                    {
+                        if (subtree_leaf->is_leaf)
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            subtree_leaf = game->position_pool + subtree_leaf->first_move_index;
+                        }
+                    }
+                    else
+                    {
+                        subtree_leaf = game->position_pool + subtree_leaf->next_move_index;
+                    }
+                }
+                if (parent_position->first_move_index == game->first_leaf_index)
+                {
+                    game->first_leaf_index = subtree_leaf->next_move_index;
+                }
+                subtree_leaf->next_move_index = game->index_of_first_free_pool_position;
+                game->index_of_first_free_pool_position = parent_position->first_move_index;
+                while (true)
+                {
+                    subtree_leaf = game->position_pool + game->index_of_first_free_pool_position;
+                    if (subtree_leaf->is_leaf)
+                    {
+                        break;
+                    }
+                    game->index_of_first_free_pool_position = subtree_leaf->first_move_index;
+                }
+            }
+            move->parent_index = NULL_POSITION;
             return STATUS_CONTINUE;
         }
     }
@@ -1217,11 +1416,11 @@ GameStatus make_selected_move_current(Game*game)
 
 void select_promotion(Game*game, PieceType promotion_type)
 {
-    Position*move = game->position_pool + *game->selected_move_index;
+    Position*move = game->position_pool + game->selected_move_index;
     while (move->pieces[game->selected_piece_index].piece_type != promotion_type)
     {
-        game->selected_move_index = &move->next_sibling_index;
-        move = game->position_pool + move->next_sibling_index;
+        game->selected_move_index = move->next_move_index;
+        move = game->position_pool + move->next_move_index;
     }
 }
 
@@ -1879,7 +2078,8 @@ void draw_promotion_window(Game*game)
     draw_controls(game, promotion_window);
     for (size_t i = 0; i < 4; ++i)
     {
-        draw_icon(game->icon_bitmaps[game->active_player_index][g_promotion_options[i]],
+        draw_icon(game->icon_bitmaps[game->position_pool[game->current_position_index].
+                active_player_index][g_promotion_options[i]],
             promotion_window, COLUMNS_PER_ICON * ((i % 2) + 1), COLUMNS_PER_ICON * ((i / 2) + 1));
     }
 }
@@ -1933,30 +2133,28 @@ MainWindowLeftButtonUpAction main_window_handle_left_mouse_button_up(Game*game, 
         if (game->selected_piece_index == NULL_PIECE)
         {
             uint8_t selected_piece_index = current_position->squares[square_index];
-            if (PLAYER_INDEX(selected_piece_index) == game->active_player_index)
+            if (PLAYER_INDEX(selected_piece_index) == current_position->active_player_index)
             {
-                game->selected_move_index = &current_position->first_child_index;
-                while (*game->selected_move_index != NULL_POSITION)
+                game->selected_move_index = current_position->first_move_index;
+                while (game->selected_move_index != NULL_POSITION)
                 {
-                    Position*move = game->position_pool + *game->selected_move_index;
+                    Position*move = game->position_pool + game->selected_move_index;
                     if (move->squares[square_index] != selected_piece_index)
                     {
                         game->selected_piece_index = selected_piece_index;
                         return ACTION_REDRAW;
                     }
-                    game->selected_move_index = &move->next_sibling_index;
+                    game->selected_move_index = move->next_move_index;
                 }
             }
         }
         else
         {
-            uint16_t*move_index = game->selected_move_index;
             do
             {
-                Position*move = game->position_pool + *move_index;
+                Position*move = game->position_pool + game->selected_move_index;
                 if (move->squares[square_index] == game->selected_piece_index)
                 {
-                    game->selected_move_index = move_index;
                     if (current_position->pieces[game->selected_piece_index].piece_type !=
                         move->pieces[game->selected_piece_index].piece_type)
                     {
@@ -1964,8 +2162,8 @@ MainWindowLeftButtonUpAction main_window_handle_left_mouse_button_up(Game*game, 
                     }
                     return ACTION_MOVE;
                 }
-                move_index = &move->next_sibling_index;
-            } while (*move_index != NULL_POSITION);
+                game->selected_move_index = move->next_move_index;
+            } while (game->selected_move_index != NULL_POSITION);
         }
     }
     main_window->clicked_control_id = NULL_CONTROL;
@@ -2050,7 +2248,7 @@ void draw_main_window(Game*game)
             Piece*piece = current_position->pieces + piece_index;
             int32_t bitmap_min_x = board->grid.min_x;
             int32_t bitmap_min_y = board->grid.min_y;
-            if (piece->is_captured)
+            if (piece->square_index == NULL_SQUARE)
             {
                 bitmap_min_x += ((int32_t)game->square_size * captured_piece_count) / 2;
                 int8_t forward_delta = FORWARD_DELTA(player_index);
@@ -2065,7 +2263,7 @@ void draw_main_window(Game*game)
             }
             if (game->selected_piece_index == piece_index)
             {
-                Color*icon_bitmap = game->icon_bitmaps[PLAYER_INDEX(game->selected_piece_index)]
+                Color*icon_bitmap = game->icon_bitmaps[current_position->active_player_index]
                     [current_position->pieces[game->selected_piece_index].piece_type];
                 Color tinted_icon_bitmap[3600];
                 for (size_t i = 0; i < 3600; ++i)
@@ -2126,21 +2324,19 @@ uint64_t load_multi_byte_value(FILE*file, size_t byte_count)
 
 void save_piece(FILE*file, Piece piece)
 {
-    fwrite(&piece.is_captured, 1, 1, file);
-    if (!piece.is_captured)
+    fwrite(&piece.square_index, 1, 1, file);
+    if (piece.square_index != NULL_SQUARE)
     {
-        fwrite(&piece.square_index, 1, 1, file);
         fwrite(&piece.times_moved, 1, 1, file);
     }
 }
 
 bool load_piece(FILE*file, Position*position, Piece*piece)
 {
-    fread(&piece->is_captured, 1, 1, file);
-    if (!piece->is_captured)
+    fread(&piece->square_index, 1, 1, file);
+    if (piece->square_index != NULL_SQUARE)
     {
-        fread(&piece->square_index, 1, 1, file);
-        if (piece->square_index >= 64)
+        if (piece->square_index > NULL_SQUARE)
         {
             return false;
         }
@@ -2155,9 +2351,10 @@ void save_game(char*file_path, Game*game)
     uint64_t time_since_last_move = get_time() - game->last_move_time;
     save_multi_byte_value(file, time_since_last_move, sizeof(time_since_last_move));
     save_multi_byte_value(file, game->time_increment, sizeof(game->time_increment));
-    fwrite(&game->active_player_index, 1, 1, file);
     Position*current_position = game->position_pool + game->current_position_index;
-    uint8_t index_of_en_passant_capturable_pawn = NULL_PIECE;
+    fwrite(&current_position->en_passant_file, 1, 1, file);
+    uint8_t active_player_index = current_position->active_player_index;
+    fwrite(&active_player_index, 1, 1, file);
     for (size_t player_index = 0; player_index < 2; ++player_index)
     {
         save_multi_byte_value(file, game->times_left_as_of_last_move[player_index],
@@ -2174,13 +2371,8 @@ void save_game(char*file_path, Game*game)
             uint8_t piece_type = piece.piece_type;
             fwrite(&piece_type, 1, 1, file);
             save_piece(file, piece);
-            if (piece.can_be_captured_en_passant)
-            {
-                index_of_en_passant_capturable_pawn = player_pieces_index + piece_index;
-            }
         }
     }
-    fwrite(&index_of_en_passant_capturable_pawn, 1, 1, file);
     fwrite(&game->selected_piece_index, 1, 1, file);
     save_multi_byte_value(file, game->draw_by_50_count, sizeof(game->draw_by_50_count));
     save_multi_byte_value(file, game->unique_state_count, sizeof(game->unique_state_count));
@@ -2214,13 +2406,19 @@ bool load_file(FILE*file, Game*game)
 {
     uint64_t time_since_last_move = load_multi_byte_value(file, sizeof(time_since_last_move));
     game->time_increment = load_multi_byte_value(file, sizeof(game->time_increment));
-    fread(&game->active_player_index, 1, 1, file);
-    if (game->active_player_index > 1)
+    Position*current_position = game->position_pool + game->first_leaf_index;
+    fread(&current_position->en_passant_file, 1, 1, file);
+    if (current_position->en_passant_file > FILE_COUNT)
     {
         return false;
     }
-    uint16_t position_index = allocate_position(game);
-    Position*current_position = game->position_pool + position_index;
+    uint8_t active_player_index;
+    fread(&active_player_index, 1, 1, file);
+    if (active_player_index > 1)
+    {
+        return false;
+    }
+    current_position->active_player_index = active_player_index;
     for (size_t player_index = 0; player_index < 2; ++player_index)
     {
         uint64_t*time_left_as_of_last_move = game->times_left_as_of_last_move + player_index;
@@ -2259,20 +2457,9 @@ bool load_file(FILE*file, Game*game)
         player_pieces[G_KNIGHT_INDEX].piece_type = PIECE_KNIGHT;
         player_pieces[H_ROOK_INDEX].piece_type = PIECE_ROOK;
     }
-    if (game->times_left_as_of_last_move[game->active_player_index] < time_since_last_move)
+    if (game->times_left_as_of_last_move[active_player_index] < time_since_last_move)
     {
         return false;
-    }
-    uint8_t index_of_en_passant_capturable_pawn;
-    fread(&index_of_en_passant_capturable_pawn, 1, 1, file);
-    if (index_of_en_passant_capturable_pawn > NULL_PIECE)
-    {
-        return false;
-    }
-    else if (index_of_en_passant_capturable_pawn < NULL_PIECE)
-    {
-        current_position->pieces[index_of_en_passant_capturable_pawn].can_be_captured_en_passant =
-            true;
     }
     fread(&game->selected_piece_index, 1, 1, file);
     if (game->selected_piece_index > NULL_PIECE)
@@ -2305,25 +2492,33 @@ bool load_file(FILE*file, Game*game)
     {
         current_position->squares[current_position->pieces[piece_index].square_index] = piece_index;
     }
-    current_position->next_sibling_index = NULL_POSITION;
-    current_position->first_child_index = NULL_POSITION;
-    make_position_current(game, position_index);
+    current_position->parent_index = NULL_POSITION;
+    current_position->next_move_index = NULL_POSITION;
+    current_position->previous_leaf_index = NULL_POSITION;
+    make_selected_move_current(game);
     game->last_move_time = get_time() - time_since_last_move;
     return true;
 }
 
 bool load_game(char*file_path, Game*game)
 {
+    game->first_leaf_index = allocate_position(game);
     FILE*file = fopen(file_path, "rb");
     bool out = load_file(file, game);
+    if (!out)
+    {
+        free_position(game, game->first_leaf_index);
+    }
     fclose(file);
+    game->run_engine = true;
     return out;
 }
 
 void free_game(Game*game)
 {
     FREE_MEMORY(game->state_buckets);
-    free_position(game, game->current_position_index);
+    game->pool_cursor = 0;
+    game->index_of_first_free_pool_position = NULL_POSITION;
 }
 
 void init_piece(Position*position, PieceType piece_type, uint8_t piece_index, uint8_t square_index,
@@ -2333,21 +2528,20 @@ void init_piece(Position*position, PieceType piece_type, uint8_t piece_index, ui
     Piece*piece = position->pieces + piece_index;
     piece->square_index = square_index;
     piece->times_moved = 0;
-    piece->can_be_captured_en_passant = false;
     piece->piece_type = piece_type;
-    piece->is_captured = false;
     position->squares[square_index] = piece_index;
 }
 
 void init_game(Game*game)
 {
-    game->active_player_index = WHITE_PLAYER_INDEX;
     game->selected_piece_index = NULL_PIECE;
-    uint16_t position_index = allocate_position(game);
-    Position*position = game->position_pool + position_index;
-    position->next_sibling_index = NULL_POSITION;
-    position->first_child_index = NULL_POSITION;
-    position->reset_draw_by_50_count = false;
+    game->first_leaf_index = allocate_position(game);
+    game->next_leaf_to_evaluate_index = game->first_leaf_index;
+    Position*position = game->position_pool + game->first_leaf_index;
+    position->parent_index = NULL_POSITION;
+    position->next_move_index = NULL_POSITION;
+    position->previous_leaf_index = NULL_POSITION;
+    position->active_player_index = WHITE_PLAYER_INDEX;
     for (uint8_t player_index = 0; player_index < 2; ++player_index)
     {
         uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
@@ -2378,11 +2572,13 @@ void init_game(Game*game)
         position->squares[square_index] = NULL_PIECE;
     }
     init_board_state_archive(game, 32);
-    make_position_current(game, position_index);
+    game->selected_move_index = game->first_leaf_index;
+    make_selected_move_current(game);
     Window*main_window = game->windows + WINDOW_MAIN;
     main_window->hovered_control_id = NULL_CONTROL;
     main_window->clicked_control_id = NULL_CONTROL;
     game->draw_by_50_count = 0;
+    game->run_engine = true;
     game->times_left_as_of_last_move[0] = g_counts_per_second * game->seconds_left[0];
     game->times_left_as_of_last_move[1] = game->times_left_as_of_last_move[0];
     game->time_increment = g_counts_per_second * (game->increment[2].digit +
@@ -2395,7 +2591,7 @@ void init(Game*game, void*font_data, size_t font_data_size)
     FT_Init_FreeType(&g_freetype_library);
     FT_New_Memory_Face(g_freetype_library, font_data, font_data_size, 0, &g_face);
     game->windows[WINDOW_START].controls = game->dialog_controls;
-    game->position_pool = RESERVE_MEMORY(512 * sizeof(Position));
+    game->position_pool = RESERVE_MEMORY(NULL_POSITION * sizeof(Position));
     game->index_of_first_free_pool_position = NULL_POSITION;
     game->pool_cursor = 0;
     for (size_t i = 0; i < ARRAY_COUNT(game->dpi_datas); ++i)
@@ -2427,4 +2623,5 @@ void init(Game*game, void*font_data, size_t font_data_size)
     ++digit;
     digit->digit = 5;
     digit->is_before_colon = false;
+    game->run_engine = false;
 }

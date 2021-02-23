@@ -14,16 +14,6 @@ typedef struct WindowsGame
 
 DWORD g_dialog_style = WS_OVERLAPPED | WS_CAPTION | WS_MINIMIZEBOX;
 
-void run_message_loop(void)
-{
-    MSG msg;
-    while (GetMessage(&msg, 0, 0, 0))
-    {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-}
-
 void resize_window(Window*window, uint32_t width, uint32_t height)
 {
     window->width = width;
@@ -66,6 +56,39 @@ void center_window(Window*window, HWND window_handle, DWORD window_style)
         window_rect.bottom - window_rect.top, SWP_SHOWWINDOW);
 }
 
+void run_message_loop(Game*game)
+{
+    while (true)
+    {
+        MSG message;
+        if (game->run_engine)
+        {
+            while (PeekMessage(&message, 0, 0, 0, PM_REMOVE))
+            {
+                if (message.message == WM_QUIT)
+                {
+                    return;
+                }
+                TranslateMessage(&message);
+                DispatchMessage(&message);
+            }
+            do_engine_iteration(game);
+        }
+        else
+        {
+            if (GetMessage(&message, 0, 0, 0))
+            {
+                TranslateMessage(&message);
+                DispatchMessage(&message);
+            }
+            else
+            {
+                return;
+            }
+        }
+    }
+}
+
 void run_dialog(WindowsGame*game, Window*dialog, HWND dialog_handle)
 {
     game->dialog_handle = dialog_handle;
@@ -73,7 +96,7 @@ void run_dialog(WindowsGame*game, Window*dialog, HWND dialog_handle)
     dialog->hovered_control_id = NULL_CONTROL;
     dialog->clicked_control_id = NULL_CONTROL;
     center_window(dialog, dialog_handle, g_dialog_style);
-    run_message_loop();
+    run_message_loop(&game->game);
     VirtualFree(dialog->pixels, 0, MEM_RELEASE);
     game->dialog_handle = 0;
 }
@@ -404,6 +427,28 @@ void run_game_over_dialog(WindowsGame*game, HWND main_window_handle)
     }
 }
 
+void handle_timer_update(WindowsGame*game, HWND main_window_handle)
+{
+    UpdateTimerStatus status = update_timer(&game->game);
+    if (status & UPDATE_TIMER_REDRAW)
+    {
+        draw_and_render_main_window(game, main_window_handle);
+    }
+    if (status & UPDATE_TIMER_TIME_OUT)
+    {
+        if (game->game.position_pool[game->game.current_position_index].active_player_index ==
+            WHITE_PLAYER_INDEX)
+        {
+            game->text = "White is out of time. Black wins.";
+        }
+        else
+        {
+            game->text = "Black is out of time. White wins.";
+        }
+        run_game_over_dialog(game, main_window_handle);
+    }
+}
+
 LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
 {
     switch (message)
@@ -441,7 +486,8 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         }
         if (status & UPDATE_TIMER_TIME_OUT)
         {
-            if (game->game.active_player_index == WHITE_PLAYER_INDEX)
+            if (game->game.position_pool[game->game.current_position_index].active_player_index ==
+                WHITE_PLAYER_INDEX)
             {
                 game->text = "White is out of time. Black wins.";
             }
@@ -510,7 +556,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         }
         case ACTION_MOVE:
         {
-            game->status = make_selected_move_current(&game->game);
+            game->status = end_turn(&game->game);
             draw_and_render_main_window(game, window_handle);
             if (game->status == STATUS_CONTINUE)
             {
@@ -523,7 +569,8 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             {
             case STATUS_CHECKMATE:
             {
-                if (game->game.active_player_index == WHITE_PLAYER_INDEX)
+                if (game->game.position_pool[game->game.current_position_index].
+                    active_player_index == WHITE_PLAYER_INDEX)
                 {
                     game->text = "Checkmate. White wins.";
                 }
@@ -545,7 +592,8 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             }
             case STATUS_TIME_OUT:
             {
-                if (game->game.active_player_index == WHITE_PLAYER_INDEX)
+                if (game->game.position_pool[game->game.current_position_index].
+                    active_player_index == WHITE_PLAYER_INDEX)
                 {
                     game->text = "White is out of time. Black wins.";
                 }
@@ -693,7 +741,7 @@ int WINAPI wWinMain(HINSTANCE instance_handle, HINSTANCE previous_instance_handl
     WindowsGame game;
     if (windows_init(&game))
     {
-        run_message_loop();
+        run_message_loop(&game.game);
     }
     return 0;
 }
