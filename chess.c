@@ -127,8 +127,12 @@ typedef struct Position
 {
     union
     {
+        struct
+        {
+            uint16_t previous_leaf_index;
+            uint16_t next_leaf_index;
+        };
         uint16_t first_move_index;
-        uint16_t previous_leaf_index;
     };
     uint16_t parent_index;
     uint16_t next_move_index;
@@ -234,6 +238,7 @@ typedef struct Game
     uint8_t state_generation;
     uint8_t selected_piece_index;
     uint8_t selected_digit_id;
+    uint8_t engine_player_index;
     bool run_engine;
 } Game;
 
@@ -324,15 +329,16 @@ void increment_unique_state_count(Game*game)
 typedef enum GameStatus
 {
     STATUS_CHECKMATE,
-    STATUS_CONTINUE,
+    STATUS_END_TURN,
     STATUS_REPETITION,
     STATUS_STALEMATE,
-    STATUS_TIME_OUT
+    STATUS_TIME_OUT,
+    STATUS_CONTINUE
 } GameStatus;
 
 bool archive_board_state(Game*game, BoardState*state)
 {
-    //FNV hash the state into an index less than buckets.size().
+    //FNV hash the state into an index less than game->state_bucket_count.
     uint32_t bucket_index = 2166136261;
     for (size_t i = 0; i < sizeof(BoardState); ++i)
     {
@@ -596,22 +602,17 @@ uint16_t allocate_position(Game*game)
         new_position = game->position_pool + new_position_index;
         if (new_position->parent_index == NULL_POSITION)
         {
-            game->index_of_first_free_pool_position = new_position->next_move_index;
+            game->index_of_first_free_pool_position = new_position->next_leaf_index;
         }
         else if (new_position->next_move_index == NULL_POSITION)
         {
+            game->position_pool[new_position->parent_index].next_leaf_index =
+                new_position->next_leaf_index;
             game->index_of_first_free_pool_position = new_position->parent_index;
-        }
-        else if (game->position_pool[new_position->next_move_index].parent_index ==
-            new_position->parent_index)
-        {
-            game->index_of_first_free_pool_position = new_position->next_move_index;
         }
         else
         {
-            game->position_pool[new_position->parent_index].next_move_index =
-                new_position->next_move_index;
-            game->index_of_first_free_pool_position = new_position->parent_index;
+            game->index_of_first_free_pool_position = new_position->next_leaf_index;
         }
     }
     new_position->en_passant_file = FILE_COUNT;
@@ -639,19 +640,21 @@ void add_move(Game*game, uint16_t position_index, uint16_t move_index)
     if (position->is_leaf)
     {
         move->previous_leaf_index = position->previous_leaf_index;
-        move->next_move_index = position->next_move_index;
-        if (move->next_move_index != NULL_POSITION)
+        move->next_leaf_index = position->next_leaf_index;
+        if (move->next_leaf_index != NULL_POSITION)
         {
-            game->position_pool[move->next_move_index].previous_leaf_index = move_index;
+            game->position_pool[move->next_leaf_index].previous_leaf_index = move_index;
         }
         position->is_leaf = false;
+        move->next_move_index = NULL_POSITION;
     }
     else
     {
         Position*next_move = game->position_pool + position->first_move_index;
         move->previous_leaf_index = next_move->previous_leaf_index;
-        move->next_move_index = position->first_move_index;
+        move->next_leaf_index = position->first_move_index;
         next_move->previous_leaf_index = move_index;
+        move->next_move_index = position->first_move_index;
     }
     if (move->previous_leaf_index == NULL_POSITION)
     {
@@ -659,7 +662,7 @@ void add_move(Game*game, uint16_t position_index, uint16_t move_index)
     }
     else
     {
-        game->position_pool[move->previous_leaf_index].next_move_index = move_index;
+        game->position_pool[move->previous_leaf_index].next_leaf_index = move_index;
     }
     position->first_move_index = move_index;
     move->active_player_index = !position->active_player_index;
@@ -669,7 +672,7 @@ void free_position(Game*game, uint16_t position_index)
 {
     Position*position = game->position_pool + position_index;
     position->parent_index = NULL_POSITION;
-    position->next_move_index = game->index_of_first_free_pool_position;
+    position->next_leaf_index = game->index_of_first_free_pool_position;
     game->index_of_first_free_pool_position = position_index;
 }
 
@@ -884,26 +887,37 @@ size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king
 void get_moves(Game*game, uint16_t position_index)
 {
     Position*position = game->position_pool + position_index;
-    uint16_t original_previous_leaf_index = position->previous_leaf_index;
-    uint16_t original_next_leaf_index = position->next_move_index;
     if (setjmp(out_of_memory_jump_buffer))
     {
-        uint16_t next_move_index = position->first_move_index;
-        do
+        uint16_t move_index = position->first_move_index;
+        Position*move = game->position_pool + move_index;
+        if (!position->is_leaf)
         {
-            free_position(game, next_move_index);
-            next_move_index = game->position_pool[next_move_index].next_move_index;
-        } while (next_move_index != NULL_POSITION);
-        position->is_leaf = true;
-        position->previous_leaf_index = original_previous_leaf_index;
-        if (original_previous_leaf_index != NULL_POSITION)
-        {
-            game->position_pool[original_previous_leaf_index].next_move_index = position_index;
-        }
-        position->next_move_index = original_next_leaf_index;
-        if (original_next_leaf_index != NULL_POSITION)
-        {
-            game->position_pool[original_next_leaf_index].previous_leaf_index = position_index;
+            position->is_leaf = true;
+            position->previous_leaf_index = move->previous_leaf_index;
+            while (true)
+            {
+                if (move->next_move_index == NULL_POSITION)
+                {
+                    position->next_leaf_index = move->next_leaf_index;
+                    free_position(game, move_index);
+                    break;
+                }
+                else
+                {
+                    free_position(game, move_index);
+                }
+                move_index = move->next_move_index;
+                move = game->position_pool + move_index;
+            }
+            if (position->previous_leaf_index != NULL_POSITION)
+            {
+                game->position_pool[position->previous_leaf_index].next_leaf_index = position_index;
+            }
+            if (position->next_leaf_index != NULL_POSITION)
+            {
+                game->position_pool[position->next_leaf_index].previous_leaf_index = position_index;
+            }
         }
         return;
     }
@@ -1101,11 +1115,11 @@ bool make_move_current(Game*game, uint16_t move_index)
         ++game->state_generation;
     }
     ++game->draw_by_50_count;
-    game->next_leaf_to_evaluate_index = position->next_move_index;
     if (!position->has_been_evaluated)
     {
         get_moves(game, game->current_position_index);
     }
+    game->next_leaf_to_evaluate_index = game->first_leaf_index;
     BoardState state = { 0 };
     uint64_t square_mask_digit = 1;
     size_t square_hash_index = 0;
@@ -1278,30 +1292,6 @@ UpdateTimerStatus update_timer(Game*game)
     return out;
 }
 
-void do_engine_iteration(Game*game)
-{
-    if (game->run_engine)
-    {
-        uint16_t position_to_evaluate_index = game->next_leaf_to_evaluate_index;
-        Position*position;
-        while (true)
-        {
-            if (position_to_evaluate_index == NULL_POSITION)
-            {
-                position_to_evaluate_index = game->first_leaf_index;
-            }
-            position = game->position_pool + position_to_evaluate_index;
-            if (!position->has_been_evaluated)
-            {
-                break;
-            }
-            position_to_evaluate_index = position->next_move_index;
-        }
-        game->next_leaf_to_evaluate_index = position->next_move_index;
-        get_moves(game, position_to_evaluate_index);
-    }
-}
-
 uint16_t get_first_tree_leaf_index(Game*game, uint16_t root_position_index)
 {
     while (true)
@@ -1326,9 +1316,7 @@ uint16_t get_last_tree_leaf_index(Game*game, uint16_t root_position_index)
     position = game->position_pool + out;
     while (true)
     {
-        if (position->next_move_index == NULL_POSITION ||
-            game->position_pool[position->next_move_index].parent_index !=
-            position->parent_index)
+        if (position->next_move_index == NULL_POSITION)
         {
             if (position->is_leaf)
             {
@@ -1381,14 +1369,14 @@ GameStatus end_turn(Game*game)
         game->position_pool + get_last_tree_leaf_index(game, selected_move_index);
     if (move_tree_first_leaf->previous_leaf_index != NULL_POSITION)
     {
-        game->position_pool[move_tree_first_leaf->previous_leaf_index].next_move_index =
-            move_tree_last_leaf->next_move_index;
+        game->position_pool[move_tree_first_leaf->previous_leaf_index].next_leaf_index =
+            move_tree_last_leaf->next_leaf_index;
     }
-    if (move_tree_last_leaf->next_move_index != NULL_POSITION)
+    if (move_tree_last_leaf->next_leaf_index != NULL_POSITION)
     {
-        game->position_pool[move_tree_last_leaf->next_move_index].previous_leaf_index =
+        game->position_pool[move_tree_last_leaf->next_leaf_index].previous_leaf_index =
             move_tree_first_leaf->previous_leaf_index;
-        move_tree_last_leaf->next_move_index = NULL_POSITION;
+        move_tree_last_leaf->next_leaf_index = NULL_POSITION;
     }
     move_tree_first_leaf->previous_leaf_index = NULL_POSITION;
     game->first_leaf_index = first_leaf_index;
@@ -1396,7 +1384,7 @@ GameStatus end_turn(Game*game)
     first_leaf_index = get_first_tree_leaf_index(game, game->current_position_index);
     game->position_pool[first_leaf_index].previous_leaf_index = NULL_POSITION;
     game->position_pool[get_last_tree_leaf_index(game, game->current_position_index)].
-        next_move_index = game->index_of_first_free_pool_position;
+        next_leaf_index = game->index_of_first_free_pool_position;
     game->index_of_first_free_pool_position = first_leaf_index;
     if (make_move_current(game, selected_move_index))
     {
@@ -1413,13 +1401,48 @@ GameStatus end_turn(Game*game)
         }
         else
         {
-            return STATUS_CONTINUE;
+            game->run_engine = true;
+            return STATUS_END_TURN;
         }
     }
     else
     {
         return STATUS_REPETITION;
     }
+}
+
+GameStatus do_engine_iteration(Game*game)
+{
+    if (game->run_engine)
+    {
+        uint16_t position_to_evaluate_index = game->next_leaf_to_evaluate_index;
+        Position*position;
+        while (true)
+        {
+            if (position_to_evaluate_index == NULL_POSITION)
+            {
+                position_to_evaluate_index = game->first_leaf_index;
+            }
+            position = game->position_pool + position_to_evaluate_index;
+            if (!position->has_been_evaluated)
+            {
+                break;
+            }
+            position_to_evaluate_index = position->next_leaf_index;
+        }
+        game->next_leaf_to_evaluate_index = position->next_leaf_index;
+        get_moves(game, position_to_evaluate_index);
+    }
+    if (!game->run_engine)
+    {
+        Position*current_position = game->position_pool + game->current_position_index;
+        if (current_position->active_player_index == game->engine_player_index)
+        {
+            game->selected_move_index = &current_position->first_move_index;
+            return end_turn(game);
+        }
+    }
+    return STATUS_CONTINUE;
 }
 
 void select_promotion(Game*game, PieceType promotion_type)
@@ -2098,10 +2121,23 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
 {
     Window*main_window = game->windows + WINDOW_MAIN;
     main_window->clicked_control_id = main_window->hovered_control_id;
-    if (main_window->hovered_control_id == main_window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id &&
-        !DRAW_BY_50_CAN_BE_CLAIMED(game))
+    if (main_window->hovered_control_id == main_window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id)
     {
-        main_window->clicked_control_id = NULL_CONTROL;
+        if (!DRAW_BY_50_CAN_BE_CLAIMED(game))
+        {
+            main_window->clicked_control_id = NULL_CONTROL;
+        }
+    }
+    else
+    {
+        uint8_t board_base_id = main_window->controls[MAIN_WINDOW_BOARD].base_id;
+        if (main_window->hovered_control_id >= board_base_id &&
+            main_window->hovered_control_id < board_base_id + 64 &&
+            game->position_pool[game->current_position_index].active_player_index ==
+                game->engine_player_index)
+        {
+            main_window->clicked_control_id = NULL_CONTROL;
+        }
     }
     return main_window->clicked_control_id != NULL_CONTROL;
 }
@@ -2505,6 +2541,7 @@ bool load_file(FILE*file, Game*game)
     current_position->parent_index = NULL_POSITION;
     current_position->next_move_index = NULL_POSITION;
     current_position->previous_leaf_index = NULL_POSITION;
+    current_position->next_leaf_index = NULL_POSITION;
     make_move_current(game, game->first_leaf_index);
     game->last_move_time = get_time() - time_since_last_move;
     return true;
@@ -2551,6 +2588,7 @@ void init_game(Game*game)
     position->parent_index = NULL_POSITION;
     position->next_move_index = NULL_POSITION;
     position->previous_leaf_index = NULL_POSITION;
+    position->next_leaf_index = NULL_POSITION;
     position->active_player_index = WHITE_PLAYER_INDEX;
     for (uint8_t player_index = 0; player_index < 2; ++player_index)
     {
@@ -2634,4 +2672,5 @@ void init(Game*game, void*font_data, size_t font_data_size)
     digit->digit = 5;
     digit->is_before_colon = false;
     game->run_engine = false;
+    game->engine_player_index = BLACK_PLAYER_INDEX;
 }
