@@ -119,11 +119,11 @@ void handle_game_over_status(WindowsGame*game, HWND main_window_handle)
         if (game->game.position_pool[game->game.current_position_index].active_player_index ==
             WHITE_PLAYER_INDEX)
         {
-            game->text = "Checkmate. White wins.";
+            game->text = "Checkmate. Black wins.";
         }
         else
         {
-            game->text = "Checkmate. Black wins.";
+            game->text = "Checkmate. White wins.";
         }
         break;
     }

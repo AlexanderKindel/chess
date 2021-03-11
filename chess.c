@@ -129,6 +129,15 @@ typedef struct Position
     {
         struct
         {
+            uint8_t squares[RANK_COUNT * FILE_COUNT];
+            Piece pieces[32];
+        };
+        int64_t evaluation;
+    };
+    union
+    {
+        struct
+        {
             uint16_t previous_leaf_index;
             uint16_t next_leaf_index;
         };
@@ -136,8 +145,6 @@ typedef struct Position
     };
     uint16_t parent_index;
     uint16_t next_move_index;
-    uint8_t squares[RANK_COUNT * FILE_COUNT];
-    Piece pieces[32];
     uint8_t en_passant_file;
     uint8_t active_player_index : 1;
     bool reset_draw_by_50_count : 1;
@@ -275,6 +282,7 @@ typedef enum Player0PieceIndices
 #define EXTERNAL_STATE_NODES(game) ((game)->state_buckets + (game)->state_bucket_count)
 #define PLAYER_PIECES_INDEX(player_index) ((player_index) << 4)
 #define EN_PASSANT_RANK(player_index, forward_delta) KING_RANK(player_index) + ((forward_delta) << 2)
+#define PLAYER_WIN(player_index) (((int64_t[]){INT64_MAX, -INT64_MAX})[player_index])
 
 size_t g_page_size;
 uint64_t g_counts_per_second;
@@ -1103,6 +1111,54 @@ void get_moves(Game*game, uint16_t position_index)
         }
     }
     position->has_been_evaluated = true;
+    if (position->is_leaf)
+    {
+        if (player_is_checked(position, position->active_player_index))
+        {
+            position->evaluation = PLAYER_WIN(!position->active_player_index);
+        }
+        else
+        {
+            position->evaluation = 0;
+        }
+    }
+    else
+    {
+        position->evaluation = 0;
+    }
+    while (position->parent_index != NULL_POSITION)
+    {
+        position = game->position_pool + position->parent_index;
+        int64_t new_evaluation = PLAYER_WIN(!position->active_player_index);
+        uint16_t move_index = position->first_move_index;
+        while (move_index != NULL_POSITION)
+        {
+            Position*move = game->position_pool + move_index;
+            if (move->has_been_evaluated)
+            {
+                if (position->active_player_index == WHITE_PLAYER_INDEX)
+                {
+                    if (move->evaluation > new_evaluation)
+                    {
+                        new_evaluation = move->evaluation;
+                    }
+                }
+                else if (move->evaluation < new_evaluation)
+                {
+                    new_evaluation = move->evaluation;
+                }
+            }
+            move_index = move->next_move_index;
+        }
+        if (new_evaluation == position->evaluation)
+        {
+            break;
+        }
+        else
+        {
+            position->evaluation = new_evaluation;
+        }
+    }
 }
 
 bool make_move_current(Game*game, uint16_t move_index)
@@ -1390,7 +1446,7 @@ GameStatus end_turn(Game*game)
     {
         if (move->is_leaf)
         {
-            if (player_is_checked(move, move->active_player_index))
+            if (move->evaluation == PLAYER_WIN(move->active_player_index))
             {
                 return STATUS_CHECKMATE;
             }
@@ -1438,7 +1494,30 @@ GameStatus do_engine_iteration(Game*game)
         Position*current_position = game->position_pool + game->current_position_index;
         if (current_position->active_player_index == game->engine_player_index)
         {
-            game->selected_move_index = &current_position->first_move_index;
+            int64_t best_evaluation = PLAYER_WIN(!game->engine_player_index);
+            uint16_t*move_index = &current_position->first_move_index;
+            game->selected_move_index = move_index;
+            while (*move_index != NULL_POSITION)
+            {
+                Position*move = game->position_pool + *move_index;
+                if (move->has_been_evaluated)
+                {
+                    if (game->engine_player_index == WHITE_PLAYER_INDEX)
+                    {
+                        if (move->evaluation > best_evaluation)
+                        {
+                            best_evaluation = move->evaluation;
+                            game->selected_move_index = move_index;
+                        }
+                    }
+                    else if (move->evaluation < best_evaluation)
+                    {
+                        best_evaluation = move->evaluation;
+                        game->selected_move_index = move_index;
+                    }
+                }
+                move_index = &move->next_move_index;
+            }
             return end_turn(game);
         }
     }
