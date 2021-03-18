@@ -1,5 +1,6 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,11 +32,28 @@ typedef struct Button
     int32_t min_y;
 } Button;
 
+typedef struct Board
+{
+    int32_t min_x;
+    int32_t min_y;
+} Board;
+
+typedef struct RadioButtons
+{
+    int32_t min_x;
+    int32_t label_baseline_y;
+} RadioButtons;
+
 typedef struct DigitInput
 {
     uint8_t digit : 4;
     bool is_before_colon;
 } DigitInput;
+
+typedef struct PromotionSelector
+{
+    int32_t min_x;
+} PromotionSelector;
 
 typedef struct TimeInput
 {
@@ -46,17 +64,12 @@ typedef struct TimeInput
     uint8_t digit_count;
 } TimeInput;
 
-typedef struct Grid
-{
-    int32_t min_x;
-    int32_t min_y;
-    uint8_t dimension;
-} Grid;
-
 typedef enum ControlType
 {
+    CONTROL_BOARD,
     CONTROL_BUTTON,
-    CONTROL_GRID,
+    CONTROL_PROMOTION_SELECTOR,
+    CONTROL_RADIO,
     CONTROL_TIME_INPUT
 } ControlType;
 
@@ -64,25 +77,31 @@ typedef struct Control
 {
     union
     {
+        Board board;
         Button button;
-        Grid grid;
+        RadioButtons radio;
+        PromotionSelector promotion_selector;
         TimeInput time_input;
     };
     uint8_t base_id;
     uint8_t control_type;
 } Control;
 
-typedef enum TimeControlWindowControlIndex
+char*g_radio_labels[2] = { "White", "Black" };
+
+typedef enum SetupWindowControlIndex
 {
-    TIME_CONTROL_WINDOW_TIME,
-    TIME_CONTROL_WINDOW_INCREMENT,
-    TIME_CONTROL_WINDOW_START_GAME,
-    TIME_CONTROL_WINDOW_CONTROL_COUNT
-} TimeControlWindowControlIndex;
+    SETUP_WINDOW_PLAYER_COLOR,
+    SETUP_WINDOW_TIME,
+    SETUP_WINDOW_INCREMENT,
+    SETUP_WINDOW_START_GAME,
+    SETUP_WINDOW_CONTROL_COUNT
+} SetupWindowControlIndex;
 
 typedef enum MainWindowControlIndex
 {
     MAIN_WINDOW_BOARD,
+    MAIN_WINDOW_PROMOTION_SELECTOR,
     MAIN_WINDOW_SAVE_GAME,
     MAIN_WINDOW_CLAIM_DRAW,
     MAIN_WINDOW_CONTROL_COUNT
@@ -98,7 +117,7 @@ typedef enum StartWindowControlIndex
 
 typedef union DialogControlCount
 {
-    char time_control[TIME_CONTROL_WINDOW_CONTROL_COUNT];
+    char setup[SETUP_WINDOW_CONTROL_COUNT];
     char start[START_CONTROL_COUNT];
 } DialogControlCount;
 
@@ -111,7 +130,9 @@ typedef enum PieceType
     PIECE_PAWN,
     PIECE_KING,
     PIECE_TYPE_COUNT
-} PieceType;
+} PieceType; 
+
+PieceType g_promotion_options[] = { PIECE_QUEEN, PIECE_ROOK, PIECE_BISHOP, PIECE_KNIGHT };
 
 typedef struct Piece
 {
@@ -125,15 +146,8 @@ typedef struct Piece
 
 typedef struct Position
 {
-    union
-    {
-        struct
-        {
-            uint8_t squares[RANK_COUNT * FILE_COUNT];
-            Piece pieces[32];
-        };
-        int64_t evaluation;
-    };
+    uint8_t squares[RANK_COUNT * FILE_COUNT];
+    Piece pieces[32];
     union
     {
         struct
@@ -143,6 +157,7 @@ typedef struct Position
         };
         uint16_t first_move_index;
     };
+    int64_t evaluation;
     uint16_t parent_index;
     uint16_t next_move_index;
     uint8_t en_passant_file;
@@ -178,8 +193,15 @@ typedef union Color
     uint32_t value;
 } Color;
 
+typedef struct CircleRasterization
+{
+    uint8_t*alpha;
+    uint32_t radius;
+} CircleRasterization;
+
 typedef struct DPIData
 {
+    CircleRasterization circle_rasterizations[3];
     Rasterization rasterizations['y' - ' ' + 1];
     uint32_t control_border_thickness;
     uint32_t text_line_height;
@@ -195,6 +217,7 @@ typedef struct Window
     Color*pixels;
     Control*controls;
     DPIData*dpi_data;
+    uint8_t*circle_rasterizations[3];
     size_t pixel_buffer_capacity;
     uint32_t width;
     uint32_t height;
@@ -208,7 +231,7 @@ typedef enum WindowIndex
     WINDOW_MAIN = 0,
     WINDOW_PROMOTION = 1,
     WINDOW_START = 1,
-    WINDOW_TIME_CONTROL = 1,
+    WINDOW_SETUP = 1,
     WINDOW_COUNT = 2
 } WindowIndex;
 
@@ -247,6 +270,7 @@ typedef struct Game
     uint8_t selected_digit_id;
     uint8_t engine_player_index;
     bool run_engine;
+    bool is_promoting;
 } Game;
 
 #define NULL_CONTROL UINT8_MAX
@@ -254,8 +278,8 @@ typedef struct Game
 #define NULL_SQUARE 64
 #define NULL_POSITION UINT16_MAX
 #define NULL_STATE UINT16_MAX
-#define WHITE_PLAYER_INDEX 0
-#define BLACK_PLAYER_INDEX 1
+#define PLAYER_INDEX_WHITE 0
+#define PLAYER_INDEX_BLACK 1
 
 typedef enum Player0PieceIndices
 {
@@ -273,11 +297,9 @@ typedef enum Player0PieceIndices
 #define PLAYER_INDEX(piece_index) ((piece_index) >> 4)
 #define KING_RANK(player_index) (7 * !(player_index))
 #define FORWARD_DELTA(player_index) (((player_index) << 1) - 1)
-#define GRID_RANK(square_index, dimension) ((square_index) / (dimension))
-#define GRID_FILE(square_index, dimension) ((square_index) % (dimension))
-#define RANK(square_index) GRID_RANK((square_index), 8)
-#define FILE(square_index) GRID_FILE((square_index), 8)
-#define GRID_SQUARE_INDEX(rank, file, dimension) ((dimension) * (rank) + (file))
+#define RANK(square_index) ((square_index) >> 3)
+#define FILE(square_index) ((square_index) & 0b111)
+#define SCREEN_SQUARE_INDEX(square_index, engine_player_index) ((engine_player_index) == PLAYER_INDEX_WHITE ? (63 - (square_index)) : (square_index))
 #define SQUARE_INDEX(rank, file) (FILE_COUNT * (rank) + (file))
 #define EXTERNAL_STATE_NODES(game) ((game)->state_buckets + (game)->state_bucket_count)
 #define PLAYER_PIECES_INDEX(player_index) ((player_index) << 4)
@@ -1136,7 +1158,7 @@ void get_moves(Game*game, uint16_t position_index)
             Position*move = game->position_pool + move_index;
             if (move->has_been_evaluated)
             {
-                if (position->active_player_index == WHITE_PLAYER_INDEX)
+                if (position->active_player_index == PLAYER_INDEX_WHITE)
                 {
                     if (move->evaluation > new_evaluation)
                     {
@@ -1214,15 +1236,15 @@ bool point_is_in_rect(int32_t x, int32_t y, int32_t min_x, int32_t min_y, uint32
     return x >= min_x && y >= min_y && x < min_x + width && y < min_y + height;
 }
 
-uint8_t id_of_grid_square_cursor_is_over(Control*grid, int32_t cursor_x, int32_t cursor_y)
+uint8_t id_of_square_cursor_is_over(Control*board, int32_t cursor_x, int32_t cursor_y)
 {
-    if (cursor_x >= grid->grid.min_x && cursor_y >= grid->grid.min_y)
+    if (cursor_x >= board->board.min_x && cursor_y >= board->board.min_y)
     {
-        uint8_t rank = (cursor_y - grid->grid.min_y) / COLUMNS_PER_ICON;
-        uint8_t file = (cursor_x - grid->grid.min_x) / COLUMNS_PER_ICON;
-        if (rank < grid->grid.dimension && file < grid->grid.dimension)
+        uint8_t rank = (cursor_y - board->board.min_y) / COLUMNS_PER_ICON;
+        uint8_t file = (cursor_x - board->board.min_x) / COLUMNS_PER_ICON;
+        if (rank < RANK_COUNT && file < FILE_COUNT)
         {
-            return grid->base_id + GRID_SQUARE_INDEX(rank, file, grid->grid.dimension);
+            return board->base_id + SQUARE_INDEX(rank, file);
         }
     }
     return NULL_CONTROL;
@@ -1237,6 +1259,15 @@ uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cu
         Control*control = window->controls + control_index;
         switch (control->control_type)
         {
+        case CONTROL_BOARD:
+        {
+            uint8_t id = id_of_square_cursor_is_over(control, cursor_x, cursor_y);
+            if (id != NULL_CONTROL)
+            {
+                return id;
+            }
+            break;
+        }
         case CONTROL_BUTTON:
         {
             if (point_is_in_rect(cursor_x, cursor_y, control->button.min_x, control->button.min_y,
@@ -1246,12 +1277,43 @@ uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cu
             }
             break;
         }
-        case CONTROL_GRID:
+        case CONTROL_PROMOTION_SELECTOR:
         {
-            uint8_t id = id_of_grid_square_cursor_is_over(control, cursor_x, cursor_y);
-            if (id != NULL_CONTROL)
+            if (point_is_in_rect(cursor_x, cursor_y, control->promotion_selector.min_x, 0,
+                4 * COLUMNS_PER_ICON, COLUMNS_PER_ICON))
             {
-                return id;
+                return control->base_id +
+                    (cursor_x - control->promotion_selector.min_x) / COLUMNS_PER_ICON;
+            }
+            break;
+        }
+        case CONTROL_RADIO:
+        {
+            int32_t cursor_x_in_circle = cursor_x +
+                window->dpi_data->circle_rasterizations[1].radius -
+                (control->radio.min_x + window->dpi_data->circle_rasterizations[2].radius);
+            int32_t diameter = 2 * window->dpi_data->circle_rasterizations[1].radius;
+            if (cursor_x_in_circle >= 0 && cursor_x_in_circle < diameter)
+            {
+                int32_t cursor_y_in_circle = cursor_y +
+                    window->dpi_data->circle_rasterizations[2].radius +
+                    window->dpi_data->circle_rasterizations[1].radius -
+                    (control->radio.label_baseline_y + window->dpi_data->text_line_height);
+                for (size_t option_index = 0;
+                    option_index < ARRAY_COUNT(g_radio_labels); ++option_index)
+                {
+                    if (cursor_y_in_circle < 0)
+                    {
+                        break;
+                    }
+                    if (cursor_y_in_circle < diameter &&
+                        window->dpi_data->circle_rasterizations[option_index].
+                        alpha[cursor_y_in_circle * diameter + cursor_x_in_circle])
+                    {
+                        return control->base_id + option_index;
+                    }
+                    cursor_y_in_circle -= window->dpi_data->text_line_height;
+                }
             }
             break;
         }
@@ -1502,7 +1564,7 @@ GameStatus do_engine_iteration(Game*game)
                 Position*move = game->position_pool + *move_index;
                 if (move->has_been_evaluated)
                 {
-                    if (game->engine_player_index == WHITE_PLAYER_INDEX)
+                    if (game->engine_player_index == PLAYER_INDEX_WHITE)
                     {
                         if (move->evaluation > best_evaluation)
                         {
@@ -1522,16 +1584,6 @@ GameStatus do_engine_iteration(Game*game)
         }
     }
     return STATUS_CONTINUE;
-}
-
-void select_promotion(Game*game, PieceType promotion_type)
-{
-    Position*move = game->position_pool + *game->selected_move_index;
-    while (move->pieces[game->selected_piece_index].piece_type != promotion_type)
-    {
-        game->selected_move_index = &move->next_move_index;
-        move = game->position_pool + move->next_move_index;
-    }
 }
 
 int32_t min32(int32_t a, int32_t b)
@@ -1616,6 +1668,44 @@ void draw_icon(Color*icon_bitmap, Window*window, int32_t min_x, int32_t min_y)
     }
 }
 
+void fill_circle_row_edge_points(uint8_t*center, int32_t diameter, int32_t max_x, int32_t y,
+    uint8_t alpha)
+{
+    uint8_t*row = center + y * diameter;
+    row[max_x] = alpha;
+    row[-(max_x + 1)] = alpha;
+}
+
+void fill_circle_row_pair_edge_points(uint8_t*center, int32_t diameter, int32_t max_x,
+    int32_t lower_row_y, uint8_t alpha)
+{
+    fill_circle_row_edge_points(center, diameter, max_x, lower_row_y, alpha);
+    fill_circle_row_edge_points(center, diameter, max_x, -(lower_row_y + 1), alpha);
+}
+
+void fill_circle_row_interior(uint8_t*center, int32_t diameter, int32_t max_x, int32_t y)
+{
+    uint8_t*row = center + y * diameter;
+    for (int32_t interior_x = -max_x; interior_x < max_x; ++interior_x)
+    {
+        row[interior_x] = 255;
+    }
+}
+
+void fill_circle_row_pair_interiors(uint8_t*center, int32_t diameter, int32_t max_x,
+    int32_t lower_row_y)
+{
+    fill_circle_row_interior(center, diameter, max_x, lower_row_y);
+    fill_circle_row_interior(center, diameter, max_x, -(lower_row_y + 1));
+}
+
+void fill_circle_row_pair(uint8_t*center, int32_t diameter, int32_t max_x, int32_t lower_row_y,
+    uint8_t max_x_alpha)
+{
+    fill_circle_row_pair_edge_points(center, diameter, max_x, lower_row_y, max_x_alpha);
+    fill_circle_row_pair_interiors(center, diameter, max_x, lower_row_y);
+}
+
 void set_dpi_data(Game*game, Window*window, uint32_t font_size, uint16_t dpi)
 {
     for (size_t i = 0; i < ARRAY_COUNT(game->dpi_datas); ++i)
@@ -1638,13 +1728,72 @@ void set_dpi_data(Game*game, Window*window, uint32_t font_size, uint16_t dpi)
     ++window->dpi_data->reference_count;
     window->dpi_data->dpi = dpi;
     FT_Set_Char_Size(g_face, 0, font_size, 0, dpi);
+    FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, '|'), FT_LOAD_DEFAULT);
+    window->dpi_data->control_border_thickness = g_face->glyph->bitmap.pitch;
     size_t rasterization_memory_size = 0;
+    for (size_t i = 0; i < ARRAY_COUNT(window->dpi_data->circle_rasterizations); ++i)
+    {
+        CircleRasterization*circle_rasterization = window->dpi_data->circle_rasterizations + i;
+        circle_rasterization->radius = (i + 1) * window->dpi_data->control_border_thickness;
+        int32_t diameter = 2 * circle_rasterization->radius;
+        rasterization_memory_size += diameter * diameter;
+    }
     for (size_t i = 0; i < ARRAY_COUNT(g_codepoints); ++i)
     {
         FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, g_codepoints[i]), FT_LOAD_DEFAULT);
         rasterization_memory_size += g_face->glyph->bitmap.rows * g_face->glyph->bitmap.pitch;
     }
     void*rasterization_memory = RESERVE_AND_COMMIT_MEMORY(rasterization_memory_size);
+    for (size_t i = 0; i < ARRAY_COUNT(window->dpi_data->circle_rasterizations); ++i)
+    {
+        CircleRasterization*circle_rasterization = window->dpi_data->circle_rasterizations + i;
+        circle_rasterization->alpha = rasterization_memory;
+        uint32_t diameter = 2 * circle_rasterization->radius;
+        rasterization_memory = (void*)((uintptr_t)rasterization_memory + diameter * diameter);
+        uint8_t*center =
+            circle_rasterization->alpha + (diameter + 1) * circle_rasterization->radius;
+        int32_t radius_squared = circle_rasterization->radius * circle_rasterization->radius;
+        int32_t int_x = 0;
+        float y = circle_rasterization->radius;
+        int32_t int_y = circle_rasterization->radius - 1;
+        while (true)
+        {
+            int32_t int_next_x = int_x + 1;
+            float next_y = sqrtf(radius_squared - int_next_x * int_next_x);
+            int32_t int_next_y = next_y;
+            if (next_y == int_next_y)
+            {
+                int_y = int_next_y;
+                fill_circle_row_pair_interiors(center, diameter, int_x, int_y);
+            }
+            if (int_y == int_next_y)
+            {
+                uint8_t alpha = 255.0 * (0.5 * (y + next_y) - int_y) + 0.5;
+                fill_circle_row_pair_edge_points(center, diameter, int_x, int_y, alpha);
+                fill_circle_row_pair(center, diameter, int_y, int_x, alpha);
+            }
+            else
+            {
+                float scanline_intersection_x_in_pixel =
+                    sqrtf(radius_squared - int_next_y * int_next_y);
+                scanline_intersection_x_in_pixel -= (int32_t)scanline_intersection_x_in_pixel;
+                uint8_t alpha = 255.0 * (scanline_intersection_x_in_pixel * (y - int_y)) + 0.5;
+                fill_circle_row_pair_edge_points(center, diameter, int_x, int_y, alpha);
+                fill_circle_row_pair_edge_points(center, diameter, int_y, int_x, alpha);
+                alpha = 255.0 * (1.0 -
+                    (1.0 - scanline_intersection_x_in_pixel) * (next_y - int_next_y)) + 0.5;
+                fill_circle_row_pair(center, diameter, int_x, int_next_y, alpha);
+                fill_circle_row_pair(center, diameter, int_next_y, int_x, alpha);
+                int_y = int_next_y;
+            }
+            if (int_x >= int_y)
+            {
+                break;
+            }
+            int_x = int_next_x;
+            y = next_y;
+        }
+    }
     for (size_t i = 0; i < ARRAY_COUNT(g_codepoints); ++i)
     {
         char codepoint = g_codepoints[i];
@@ -1661,8 +1810,6 @@ void set_dpi_data(Game*game, Window*window, uint32_t font_size, uint16_t dpi)
         rasterization_memory = (void*)((uintptr_t)rasterization_memory + rasterization_size);
     }
     window->dpi_data->text_line_height = ROUND26_6_TO_PIXEL(g_face->size->metrics.height);
-    FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, '|'), FT_LOAD_DEFAULT);
-    window->dpi_data->control_border_thickness = g_face->glyph->bitmap.pitch;
     window->dpi_data->text_control_height  =
         ROUND26_6_TO_PIXEL(g_face->size->metrics.ascender - 2 * g_face->size->metrics.descender);
     FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, 'M'), FT_LOAD_DEFAULT);
@@ -1751,19 +1898,47 @@ void draw_string(Window*window, char*string, int32_t origin_x, int32_t origin_y,
     }
 }
 
+void draw_circle(Window*window, CircleRasterization*rasterization, int32_t min_x,
+    int32_t center_y, Color color)
+{
+    int32_t diameter = 2 * rasterization->radius;
+    int32_t max_x_in_bitmap = min32(diameter, window->width - min_x);
+    int32_t min_y = center_y - rasterization->radius;
+    int32_t max_y_in_bitmap = min32(diameter, window->height - min_y);
+    Color*bitmap_row_min_x_in_window = window->pixels + min_y * window->width + min_x;
+    uint8_t*circle_row = rasterization->alpha;
+    for (int32_t y_in_bitmap = 0; y_in_bitmap < max_y_in_bitmap; ++y_in_bitmap)
+    {
+        for (int32_t x_in_bitmap = 0; x_in_bitmap < max_x_in_bitmap; ++x_in_bitmap)
+        {
+            Color*window_pixel = bitmap_row_min_x_in_window + x_in_bitmap;
+            uint32_t alpha = circle_row[x_in_bitmap];
+            uint32_t lerp_term = (255 - alpha) * window_pixel->alpha;
+            window_pixel->red = (color.red * alpha) / 255 + (lerp_term * window_pixel->red) / 65025;
+            window_pixel->green =
+                (color.green * alpha) / 255 + (lerp_term * window_pixel->green) / 65025;
+            window_pixel->blue =
+                (color.blue * alpha) / 255 + (lerp_term * window_pixel->blue) / 65025;
+            window_pixel->alpha = alpha + lerp_term / 255;
+        }
+        circle_row += diameter;
+        bitmap_row_min_x_in_window += window->width;
+    }
+}
+
 Color tint_color(Color color, Color tint)
 {
     return (Color) { .red = (color.red * tint.red) / 255, .green = (color.green * tint.green) / 255,
         .blue = (color.blue * tint.blue) / 255, .alpha = 255 };
 }
 
-void color_square_with_index(Window*window, Grid*grid, Color tint, uint32_t square_size,
+void color_square_with_index(Window*window, Board*board, Color tint, uint32_t square_size,
     uint8_t square_index)
 {
-    if (square_index < grid->dimension * grid->dimension)
+    if (square_index < RANK_COUNT * FILE_COUNT)
     {
-        uint8_t rank = GRID_RANK(square_index, grid->dimension);
-        uint8_t file = GRID_FILE(square_index, grid->dimension);
+        uint8_t rank = RANK(square_index);
+        uint8_t file = FILE(square_index);
         Color color;
         if ((rank + file) % 2)
         {
@@ -1773,7 +1948,7 @@ void color_square_with_index(Window*window, Grid*grid, Color tint, uint32_t squa
         {
             color = tint;
         }
-        draw_rectangle(window, grid->min_x + square_size * file, grid->min_y + square_size * rank,
+        draw_rectangle(window, board->min_x + square_size * file, board->min_y + square_size * rank,
             square_size, square_size, color);
     }
 }
@@ -1808,28 +1983,6 @@ void draw_active_button(Window*window, Control*button)
     draw_button(window, &button->button, color, g_black);
 }
 
-void draw_grid(Window*window, Control*grid, uint32_t square_size)
-{
-    uint32_t grid_width = grid->grid.dimension * square_size;
-    draw_rectangle_border(window, grid->grid.min_x, grid->grid.min_y, grid_width, grid_width);
-    for (size_t rank = 0; rank < grid->grid.dimension; ++rank)
-    {
-        int32_t square_min_y = grid->grid.min_y + square_size * rank;
-        for (size_t file = 0; file < grid->grid.dimension; ++file)
-        {
-            if ((rank + file) % 2)
-            {
-                draw_rectangle(window, grid->grid.min_x + square_size * file, square_min_y,
-                    square_size, square_size, g_dark_square_gray);
-            }
-        }
-    }
-    color_square_with_index(window, &grid->grid, g_hovered_blue, square_size,
-        window->hovered_control_id - grid->base_id);
-    color_square_with_index(window, &grid->grid, g_clicked_red, square_size,
-        window->clicked_control_id - grid->base_id);
-}
-
 void clear_window(Window*window)
 {
     size_t pixel_count = window->width * window->height;
@@ -1852,9 +2005,50 @@ void draw_controls(Game*game, Window*window)
             draw_active_button(window, control);
             break;
         }
-        case CONTROL_GRID:
+        case CONTROL_RADIO:
         {
-            draw_grid(window, control, game->square_size);
+            draw_string(window, "Color to play as:", control->radio.min_x,
+                control->radio.label_baseline_y, g_black);
+            int32_t option_label_x = control->radio.min_x + window->dpi_data->text_control_padding +
+                2 * window->dpi_data->circle_rasterizations[2].radius;
+            int32_t white_circle_center_x = control->radio.min_x +
+                window->dpi_data->circle_rasterizations[2].radius -
+                window->dpi_data->circle_rasterizations[1].radius;
+            int32_t option_baseline_y = control->radio.label_baseline_y;
+            for (size_t option_index = 0; option_index < ARRAY_COUNT(g_radio_labels);
+                ++option_index)
+            {
+                option_baseline_y += window->dpi_data->text_line_height;
+                int32_t circle_center_y =
+                    option_baseline_y - window->dpi_data->circle_rasterizations[2].radius;
+                draw_circle(window, window->dpi_data->circle_rasterizations + 2,
+                    control->radio.min_x, circle_center_y, g_black);
+                uint8_t option_id = control->base_id + option_index;
+                Color color;
+                if (window->clicked_control_id == option_id)
+                {
+                    color = g_clicked_red;
+                }
+                else if (window->hovered_control_id == option_id)
+                {
+                    color = g_hovered_blue;
+                }
+                else
+                {
+                    color = g_white;
+                }
+                draw_circle(window, window->dpi_data->circle_rasterizations + 1,
+                    white_circle_center_x, circle_center_y, color);
+                if (option_index != game->engine_player_index)
+                {
+                    draw_circle(window, window->dpi_data->circle_rasterizations,
+                        control->radio.min_x + window->dpi_data->circle_rasterizations[2].radius -
+                            window->dpi_data->circle_rasterizations[0].radius,
+                        circle_center_y, g_black);
+                }
+                draw_string(window, g_radio_labels[option_index], option_label_x, option_baseline_y,
+                    g_black);
+            }
             break;
         }
         case CONTROL_TIME_INPUT:
@@ -1935,14 +2129,24 @@ void set_control_ids(Window*window)
         control->base_id = id;
         switch (control->control_type)
         {
+        case CONTROL_BOARD:
+        {
+            id += RANK_COUNT * FILE_COUNT;
+            break;
+        }
         case CONTROL_BUTTON:
         {
             ++id;
             break;
         }
-        case CONTROL_GRID:
+        case CONTROL_PROMOTION_SELECTOR:
         {
-            id += control->grid.dimension * control->grid.dimension;
+            id += ARRAY_COUNT(g_promotion_options);
+            break;
+        }
+        case CONTROL_RADIO:
+        {
+            id += ARRAY_COUNT(g_radio_labels);
             break;
         }
         case CONTROL_TIME_INPUT:
@@ -1953,7 +2157,7 @@ void set_control_ids(Window*window)
     }
 }
 
-bool time_control_window_handle_left_mouse_button_up(Game*game, Window*window, int32_t cursor_x,
+bool setup_window_handle_left_mouse_button_up(Game*game, Window*window, int32_t cursor_x,
     int32_t cursor_y)
 {
     if (window->clicked_control_id != NULL_CONTROL)
@@ -1962,14 +2166,27 @@ bool time_control_window_handle_left_mouse_button_up(Game*game, Window*window, i
         if (id == window->clicked_control_id)
         {
             window->clicked_control_id = NULL_CONTROL;
-            if (id == window->controls[TIME_CONTROL_WINDOW_START_GAME].base_id)
+            if (id == window->controls[SETUP_WINDOW_START_GAME].base_id)
             {
                 return true;
             }
-            game->selected_digit_id = id;
+            if (id >= window->controls[SETUP_WINDOW_PLAYER_COLOR].base_id &&
+                id < window->controls[SETUP_WINDOW_PLAYER_COLOR].base_id +
+                    ARRAY_COUNT(g_radio_labels))
+            {
+                game->engine_player_index =
+                    !(id - window->controls[SETUP_WINDOW_PLAYER_COLOR].base_id);
+            }
+            else
+            {
+                game->selected_digit_id = id;
+            }
             return false;
         }
-        window->clicked_control_id = NULL_CONTROL;
+        else
+        {
+            window->clicked_control_id = NULL_CONTROL;
+        }
     }
     game->selected_digit_id = NULL_CONTROL;
     return false;
@@ -2031,77 +2248,80 @@ bool handle_time_input_key_down(Game*game, Control*time_input, KeyId key)
     return false;
 }
 
-bool time_control_window_handle_key_down(Game*game, Window*window, uint8_t digit)
+bool setup_window_handle_key_down(Game*game, Window*window, uint8_t digit)
 {
-    if (handle_time_input_key_down(game, window->controls + TIME_CONTROL_WINDOW_TIME, digit))
+    if (handle_time_input_key_down(game, window->controls + SETUP_WINDOW_TIME, digit))
     {
         return true;
     }
-    else if (handle_time_input_key_down(game, window->controls + TIME_CONTROL_WINDOW_INCREMENT,
-        digit))
+    else if (handle_time_input_key_down(game, window->controls + SETUP_WINDOW_INCREMENT, digit))
     {
         return true;
     }
     return false;
 }
 
-void set_time_control_window_dpi(Game*game, uint16_t dpi)
+void set_setup_window_dpi(Game*game, uint16_t dpi)
 {
-    Window*time_control_window = game->windows + WINDOW_TIME_CONTROL;
-    set_dpi_data(game, time_control_window, game->font_size, dpi);
-    TimeInput*time = &time_control_window->controls[TIME_CONTROL_WINDOW_TIME].time_input;
-    time->min_x = time_control_window->dpi_data->control_border_thickness +
-        time_control_window->dpi_data->text_control_height;
-    TimeInput*increment = &time_control_window->controls[TIME_CONTROL_WINDOW_INCREMENT].time_input;
+    Window*setup_window = game->windows + WINDOW_SETUP;
+    set_dpi_data(game, setup_window, game->font_size, dpi);
+    RadioButtons*player_color = &setup_window->controls[SETUP_WINDOW_PLAYER_COLOR].radio;
+    player_color->min_x = setup_window->dpi_data->text_control_height;
+    TimeInput*time = &setup_window->controls[SETUP_WINDOW_TIME].time_input;
+    time->min_x = setup_window->dpi_data->control_border_thickness +
+        setup_window->dpi_data->text_control_height;
+    TimeInput*increment = &setup_window->controls[SETUP_WINDOW_INCREMENT].time_input;
     increment->min_x = time->min_x;
-    Button*start_game_button =
-        &time_control_window->controls[TIME_CONTROL_WINDOW_START_GAME].button;
+    Button*start_game_button = &setup_window->controls[SETUP_WINDOW_START_GAME].button;
     start_game_button->min_x = time->min_x;
-    start_game_button->width = max32(max32(5 * time_control_window->dpi_data->digit_input_width +
-        4 * ROUND26_6_TO_PIXEL(time_control_window->dpi_data->
+    start_game_button->width = max32(max32(5 * setup_window->dpi_data->digit_input_width +
+        4 * ROUND26_6_TO_PIXEL(setup_window->dpi_data->
             rasterizations[':' - g_codepoints[0]].advance) +
-        6 * time_control_window->dpi_data->control_border_thickness,
-        get_string_length(time_control_window->dpi_data->rasterizations, increment->label)),
-        get_string_length(time_control_window->dpi_data->rasterizations, start_game_button->label) +
-            2 * time_control_window->dpi_data->text_control_padding);
-    time_control_window->width = 2 *(time_control_window->dpi_data->text_control_height +
-        time_control_window->dpi_data->control_border_thickness) + start_game_button->width;
-    time->min_y = time_control_window->dpi_data->text_line_height +
-        time_control_window->dpi_data->text_control_height +
-        time_control_window->dpi_data->control_border_thickness;
-    increment->min_y = time->min_y +
-        time_control_window->dpi_data->text_line_height +
-        2 * (time_control_window->dpi_data->control_border_thickness +
-            time_control_window->dpi_data->text_control_height);
+        6 * setup_window->dpi_data->control_border_thickness,
+        get_string_length(setup_window->dpi_data->rasterizations, increment->label)),
+        get_string_length(setup_window->dpi_data->rasterizations, start_game_button->label) +
+            2 * setup_window->dpi_data->text_control_padding);
+    setup_window->width = 2 *(setup_window->dpi_data->text_control_height +
+        setup_window->dpi_data->control_border_thickness) + start_game_button->width;
+    player_color->label_baseline_y = 2 * setup_window->dpi_data->text_line_height;
+    time->min_y = player_color->label_baseline_y + 3 * setup_window->dpi_data->text_line_height +
+        setup_window->dpi_data->text_control_height +
+        setup_window->dpi_data->control_border_thickness;
+    increment->min_y = time->min_y + setup_window->dpi_data->text_line_height +
+        2 * (setup_window->dpi_data->control_border_thickness +
+            setup_window->dpi_data->text_control_height);
     start_game_button->min_y = increment->min_y + 
-        2 * (time_control_window->dpi_data->control_border_thickness +
-            time_control_window->dpi_data->text_control_height);
-    time_control_window->height = start_game_button->min_y +
-        time_control_window->dpi_data->control_border_thickness + 
-        2 * time_control_window->dpi_data->text_control_height;
+        2 * (setup_window->dpi_data->control_border_thickness +
+            setup_window->dpi_data->text_control_height);
+    setup_window->height = start_game_button->min_y +
+        setup_window->dpi_data->control_border_thickness +
+        2 * setup_window->dpi_data->text_control_height;
 }
 
-void init_time_control_window(Game*game, uint16_t dpi)
+void init_setup_window(Game*game, uint16_t dpi)
 {
-    Window*time_control_window = game->windows + WINDOW_TIME_CONTROL;
-    time_control_window->control_count = TIME_CONTROL_WINDOW_CONTROL_COUNT;
-    Control*control = time_control_window->controls + TIME_CONTROL_WINDOW_TIME;
+    Window*setup_window = game->windows + WINDOW_SETUP;
+    setup_window->control_count = SETUP_WINDOW_CONTROL_COUNT;
+    Control*control = setup_window->controls + SETUP_WINDOW_PLAYER_COLOR;
+    control->control_type = CONTROL_RADIO;
+    game->engine_player_index = PLAYER_INDEX_BLACK;
+    control = setup_window->controls + SETUP_WINDOW_TIME;
     control->control_type = CONTROL_TIME_INPUT;
     control->time_input.label = "Time:";
     control->time_input.digits = game->time_control;
     control->time_input.digit_count = ARRAY_COUNT(game->time_control);
-    control = time_control_window->controls + TIME_CONTROL_WINDOW_INCREMENT;
+    control = setup_window->controls + SETUP_WINDOW_INCREMENT;
     control->control_type = CONTROL_TIME_INPUT;
     control->time_input.label = "Increment:";
     control->time_input.digits = game->increment;
     control->time_input.digit_count = ARRAY_COUNT(game->increment);
-    control = time_control_window->controls + TIME_CONTROL_WINDOW_START_GAME;
+    control = setup_window->controls + SETUP_WINDOW_START_GAME;
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Start";
-    set_control_ids(time_control_window);
-    set_time_control_window_dpi(game, dpi);
-    time_control_window->pixels = 0;
-    time_control_window->pixel_buffer_capacity = 0;
+    set_control_ids(setup_window);
+    set_setup_window_dpi(game, dpi);
+    setup_window->pixels = 0;
+    setup_window->pixel_buffer_capacity = 0;
     game->selected_digit_id = NULL_CONTROL;
 }
 
@@ -2157,41 +2377,12 @@ void init_start_window(Game*game, char*text, uint16_t dpi)
     start_window->pixel_buffer_capacity = 0;
 }
 
-void init_promotion_window(Game*game)
-{
-    Window*promotion_window = game->windows + WINDOW_PROMOTION;
-    promotion_window->control_count = 1;
-    promotion_window->controls->control_type = CONTROL_GRID;
-    promotion_window->controls->grid.min_x = game->square_size;
-    promotion_window->controls->grid.min_y = game->square_size;
-    promotion_window->controls->grid.dimension = 2;
-    promotion_window->controls->base_id = 0;
-    promotion_window->width = 4 * game->square_size;
-    promotion_window->height = promotion_window->width;
-    promotion_window->pixels = 0;
-    promotion_window->pixel_buffer_capacity = 0;
-}
-
 void draw_start_window(Game*game, char*text)
 {
     Window*start_window = game->windows + WINDOW_START;
     draw_controls(game, start_window);
     draw_string(start_window, text, start_window->dpi_data->text_control_height,
         2 * start_window->dpi_data->text_line_height, g_black);
-}
-
-PieceType g_promotion_options[] = { PIECE_QUEEN, PIECE_ROOK, PIECE_BISHOP, PIECE_KNIGHT };
-
-void draw_promotion_window(Game*game)
-{
-    Window*promotion_window = game->windows + WINDOW_PROMOTION;
-    draw_controls(game, promotion_window);
-    for (size_t i = 0; i < 4; ++i)
-    {
-        draw_icon(game->icon_bitmaps[game->position_pool[game->current_position_index].
-                active_player_index][g_promotion_options[i]],
-            promotion_window, COLUMNS_PER_ICON * ((i % 2) + 1), COLUMNS_PER_ICON * ((i / 2) + 1));
-    }
 }
 
 #define DRAW_BY_50_CAN_BE_CLAIMED(game) (game->draw_by_50_count > 100)
@@ -2212,10 +2403,21 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
         uint8_t board_base_id = main_window->controls[MAIN_WINDOW_BOARD].base_id;
         if (main_window->hovered_control_id >= board_base_id &&
             main_window->hovered_control_id < board_base_id + 64 &&
-            game->position_pool[game->current_position_index].active_player_index ==
-                game->engine_player_index)
+            (game->position_pool[game->current_position_index].active_player_index ==
+                game->engine_player_index || game->is_promoting))
         {
             main_window->clicked_control_id = NULL_CONTROL;
+        }
+        else
+        {
+            uint8_t promotion_selector_base_id =
+                main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
+            if (main_window->hovered_control_id >= promotion_selector_base_id &&
+                promotion_selector_base_id < promotion_selector_base_id +
+                ARRAY_COUNT(g_promotion_options) && !game->is_promoting)
+            {
+                main_window->clicked_control_id = NULL_CONTROL;
+            }
         }
     }
     return main_window->clicked_control_id != NULL_CONTROL;
@@ -2223,8 +2425,6 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
 
 typedef enum MainWindowLeftButtonUpAction
 {
-    ACTION_MOVE,
-    ACTION_PROMOTE,
     ACTION_REDRAW,
     ACTION_SAVE_GAME,
     ACTION_CLAIM_DRAW,
@@ -2251,10 +2451,12 @@ MainWindowLeftButtonUpAction main_window_handle_left_mouse_button_up(Game*game, 
         {
             return ACTION_CLAIM_DRAW;
         }
-        uint8_t square_index = id - main_window->controls[MAIN_WINDOW_BOARD].base_id;
         Position*current_position = game->position_pool + game->current_position_index;
         if (game->selected_piece_index == NULL_PIECE)
         {
+            uint8_t square_index =
+                SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id,
+                    game->engine_player_index);
             uint8_t selected_piece_index = current_position->squares[square_index];
             if (PLAYER_INDEX(selected_piece_index) == current_position->active_player_index)
             {
@@ -2273,22 +2475,49 @@ MainWindowLeftButtonUpAction main_window_handle_left_mouse_button_up(Game*game, 
         }
         else
         {
-            uint16_t*piece_first_move_index = game->selected_move_index;
-            do
+            uint8_t promotion_selector_base_id =
+                main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
+            if (id >= promotion_selector_base_id &&
+                id < promotion_selector_base_id + ARRAY_COUNT(g_promotion_options))
             {
+                PieceType selected_piece_type =
+                    g_promotion_options[id - promotion_selector_base_id];
                 Position*move = game->position_pool + *game->selected_move_index;
-                if (move->squares[square_index] == game->selected_piece_index)
+                while (move->pieces[game->selected_piece_index].piece_type != selected_piece_type)
                 {
-                    if (current_position->pieces[game->selected_piece_index].piece_type !=
-                        move->pieces[game->selected_piece_index].piece_type)
-                    {
-                        return ACTION_PROMOTE;
-                    }
-                    return ACTION_MOVE;
+                    game->selected_move_index = &move->next_move_index;
+                    move = game->position_pool + move->next_move_index;
                 }
-                game->selected_move_index = &move->next_move_index;
-            } while (*game->selected_move_index != NULL_POSITION);
-            game->selected_move_index = piece_first_move_index;
+                end_turn(game);
+                game->is_promoting = false;
+            }
+            else
+            {
+                uint8_t square_index =
+                    SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id,
+                        game->engine_player_index);
+                uint16_t*piece_first_move_index = game->selected_move_index;
+                do
+                {
+                    Position*move = game->position_pool + *game->selected_move_index;
+                    if (move->squares[square_index] == game->selected_piece_index)
+                    {
+                        if (current_position->pieces[game->selected_piece_index].piece_type !=
+                            move->pieces[game->selected_piece_index].piece_type)
+                        {
+                            game->is_promoting = true;
+                        }
+                        else
+                        {
+                            end_turn(game);
+                        }
+                        main_window->clicked_control_id = NULL_CONTROL;
+                        return ACTION_REDRAW;
+                    }
+                    game->selected_move_index = &move->next_move_index;
+                } while (*game->selected_move_index != NULL_POSITION);
+                game->selected_move_index = piece_first_move_index;
+            }
         }
     }
     main_window->clicked_control_id = NULL_CONTROL;
@@ -2299,9 +2528,11 @@ void set_main_window_dpi(Game*game, uint16_t dpi)
 {
     Window*main_window = game->windows + WINDOW_MAIN;
     set_dpi_data(game, main_window, game->font_size, dpi);
-    Grid*board = &main_window->controls[MAIN_WINDOW_BOARD].grid;
+    Board*board = &main_window->controls[MAIN_WINDOW_BOARD].board;
     board->min_x = game->square_size + main_window->dpi_data->control_border_thickness;
     board->min_y = board->min_x;
+    main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].promotion_selector.min_x =
+        board->min_x + 2 * COLUMNS_PER_ICON;
     Button*save_button = &main_window->controls[MAIN_WINDOW_SAVE_GAME].button;
     save_button->min_x = board->min_x + 8 * game->square_size +
         main_window->dpi_data->text_control_height +
@@ -2331,8 +2562,9 @@ void init_main_window(Game*game, uint16_t dpi)
     main_window->control_count = MAIN_WINDOW_CONTROL_COUNT;
     main_window->controls = game->main_window_controls;
     Control*control = main_window->controls + MAIN_WINDOW_BOARD;
-    control->control_type = CONTROL_GRID;
-    control->grid.dimension = RANK_COUNT;
+    control->control_type = CONTROL_BOARD;
+    control = main_window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
+    control->control_type = CONTROL_PROMOTION_SELECTOR;
     control = main_window->controls + MAIN_WINDOW_SAVE_GAME;
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Save game";
@@ -2345,47 +2577,35 @@ void init_main_window(Game*game, uint16_t dpi)
     main_window->pixel_buffer_capacity = 0;
 }
 
-void draw_main_window(Game*game)
+void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_origin_y,
+    uint8_t player_index, bool draw_captured_pieces)
 {
-    Window*main_window = game->windows + WINDOW_MAIN;
-    clear_window(main_window);
-    draw_grid(main_window, main_window->controls + MAIN_WINDOW_BOARD, game->square_size);
-    Control*save_game_button = main_window->controls + MAIN_WINDOW_SAVE_GAME;
-    draw_active_button(main_window, save_game_button);
-    if (DRAW_BY_50_CAN_BE_CLAIMED(game))
-    {
-        draw_active_button(main_window, main_window->controls + MAIN_WINDOW_CLAIM_DRAW);
-    }
-    else
-    {
-        draw_button(main_window, &main_window->controls[MAIN_WINDOW_CLAIM_DRAW].button, g_white,
-            g_dark_square_gray);
-    }
-    Control*board = main_window->controls + MAIN_WINDOW_BOARD;
     Position*current_position = game->position_pool + game->current_position_index;
-    for (uint8_t player_index = 0; player_index < 2; ++player_index)
+    Window*main_window = game->windows + WINDOW_MAIN;
+    Control*board = main_window->controls + MAIN_WINDOW_BOARD;
+    int32_t captured_piece_min_x = board->board.min_x;
+    uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
+    uint8_t max_piece_index = player_pieces_index + 16;
+    for (size_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
     {
-        uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
-        uint8_t captured_piece_count = 0;
-        for (size_t i = 0; i < 16; ++i)
+        Piece*piece = current_position->pieces + piece_index;
+        if (piece->square_index == NULL_SQUARE)
         {
-            uint8_t piece_index = player_pieces_index + i;
-            Piece*piece = current_position->pieces + piece_index;
-            int32_t bitmap_min_x = board->grid.min_x;
-            int32_t bitmap_min_y = board->grid.min_y;
-            if (piece->square_index == NULL_SQUARE)
+            if (draw_captured_pieces)
             {
-                bitmap_min_x += ((int32_t)game->square_size * captured_piece_count) / 2;
-                int8_t forward_delta = FORWARD_DELTA(player_index);
-                bitmap_min_y += forward_delta * main_window->dpi_data->control_border_thickness +
-                    ((int32_t)game->square_size * (7 + 9 * forward_delta)) / 2;
-                captured_piece_count += 1;
+                draw_icon(game->icon_bitmaps[player_index][piece->piece_type], main_window,
+                    captured_piece_min_x, captured_pieces_min_y);
+                captured_piece_min_x += game->square_size / 2;
             }
-            else
-            {
-                bitmap_min_x += game->square_size * FILE(piece->square_index);
-                bitmap_min_y += game->square_size * RANK(piece->square_index);
-            }
+        }
+        else
+        {
+            uint8_t screen_square_index =
+                SCREEN_SQUARE_INDEX(piece->square_index, game->engine_player_index);
+            int32_t bitmap_min_x =
+                board->board.min_x + game->square_size * FILE(screen_square_index);
+            int32_t bitmap_min_y =
+                board->board.min_y + game->square_size * RANK(screen_square_index);
             if (game->selected_piece_index == piece_index)
             {
                 Color*icon_bitmap = game->icon_bitmaps[current_position->active_player_index]
@@ -2408,25 +2628,94 @@ void draw_main_window(Game*game)
                     bitmap_min_x, bitmap_min_y);
             }
         }
-        uint64_t time = game->seconds_left[player_index];
-        char time_text[9];
-        size_t char_index = 9;
-        while (char_index)
-        {
-            --char_index;
-            time_text[char_index] = ':';
-            uint32_t denomination = time % 60;
-            --char_index;
-            time_text[char_index] = denomination % 10 + '0';
-            --char_index;
-            time_text[char_index] = denomination / 10 + '0';
-            time /= 60;
-        }
-        time_text[8] = 0;
-        draw_string(main_window, time_text, save_game_button->button.min_x, board->grid.min_y +
-            KING_RANK(player_index) * game->square_size + main_window->dpi_data->text_line_height,
-            g_black);
     }
+    uint64_t time = game->seconds_left[player_index];
+    char time_text[9];
+    size_t char_index = 9;
+    while (char_index)
+    {
+        --char_index;
+        time_text[char_index] = ':';
+        uint32_t denomination = time % 60;
+        --char_index;
+        time_text[char_index] = denomination % 10 + '0';
+        --char_index;
+        time_text[char_index] = denomination / 10 + '0';
+        time /= 60;
+    }
+    time_text[8] = 0;
+    draw_string(main_window, time_text, main_window->controls[MAIN_WINDOW_SAVE_GAME].button.min_x,
+        timer_text_origin_y, g_black);
+}
+
+void draw_main_window(Game*game)
+{
+    Window*main_window = game->windows + WINDOW_MAIN;
+    clear_window(main_window);
+    Control*board = main_window->controls + MAIN_WINDOW_BOARD;
+    uint32_t board_width = FILE_COUNT * game->square_size;
+    draw_rectangle_border(main_window, board->board.min_x, board->board.min_y, board_width,
+        board_width);
+    for (size_t rank = 0; rank < RANK_COUNT; ++rank)
+    {
+        int32_t square_min_y = board->board.min_y + game->square_size * rank;
+        for (size_t file = 0; file < FILE_COUNT; ++file)
+        {
+            if ((rank + file) % 2)
+            {
+                draw_rectangle(main_window, board->board.min_x + game->square_size * file,
+                    square_min_y, game->square_size, game->square_size, g_dark_square_gray);
+            }
+        }
+    }
+    color_square_with_index(main_window, &board->board, g_hovered_blue, game->square_size,
+        main_window->hovered_control_id - board->base_id);
+    color_square_with_index(main_window, &board->board, g_clicked_red, game->square_size,
+        main_window->clicked_control_id - board->base_id);
+    Control*save_game_button = main_window->controls + MAIN_WINDOW_SAVE_GAME;
+    draw_active_button(main_window, save_game_button);
+    if (DRAW_BY_50_CAN_BE_CLAIMED(game))
+    {
+        draw_active_button(main_window, main_window->controls + MAIN_WINDOW_CLAIM_DRAW);
+    }
+    else
+    {
+        draw_button(main_window, &main_window->controls[MAIN_WINDOW_CLAIM_DRAW].button, g_white,
+            g_dark_square_gray);
+    }
+    if (game->is_promoting)
+    {
+        Control*promotion_selector = main_window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
+        int32_t icon_min_x = promotion_selector->promotion_selector.min_x;
+        draw_rectangle(main_window, icon_min_x - main_window->dpi_data->control_border_thickness, 0,
+            main_window->dpi_data->control_border_thickness, COLUMNS_PER_ICON, g_black);
+        for (size_t i = 0; i < ARRAY_COUNT(g_promotion_options); ++i)
+        {
+            uint8_t selection_id = promotion_selector->base_id + i;
+            if (main_window->clicked_control_id == selection_id)
+            {
+                draw_rectangle(main_window, icon_min_x, 0, COLUMNS_PER_ICON, COLUMNS_PER_ICON,
+                    g_clicked_red);
+            }
+            else if (main_window->hovered_control_id == selection_id)
+            {
+                draw_rectangle(main_window, icon_min_x, 0, COLUMNS_PER_ICON, COLUMNS_PER_ICON,
+                    g_hovered_blue);
+            }
+            draw_icon(game->icon_bitmaps[!game->engine_player_index][g_promotion_options[i]],
+                main_window, icon_min_x, 0);
+            icon_min_x += COLUMNS_PER_ICON;
+        }
+        draw_rectangle(main_window, icon_min_x, 0,
+            main_window->dpi_data->control_border_thickness, COLUMNS_PER_ICON, g_black);
+    }
+    draw_player(game,
+        board->board.min_y + board_width + main_window->dpi_data->control_border_thickness,
+        board->board.min_y + main_window->dpi_data->text_line_height, game->engine_player_index,
+        true);
+    draw_player(game, 0,
+        board->board.min_y + 7 * game->square_size + main_window->dpi_data->text_line_height,
+        !game->engine_player_index, !game->is_promoting);
 }
 
 void save_multi_byte_value(FILE*file, uint64_t value, size_t byte_count)
@@ -2524,6 +2813,8 @@ void save_game(char*file_path, Game*game)
             }
         }
     }
+    fwrite(&game->engine_player_index, 1, 1, file);
+    fwrite(&game->is_promoting, 1, 1, file);
     fclose(file);
 }
 
@@ -2608,6 +2899,12 @@ bool load_file(FILE*file, Game*game)
         fread(&state.occupied_square_hashes, 1, ARRAY_COUNT(state.occupied_square_hashes), file);
         archive_board_state(game, &state);
     }
+    fread(&game->engine_player_index, 1, 1, file);
+    fread(&game->is_promoting, 1, 1, file);
+    if (game->engine_player_index > PLAYER_INDEX_BLACK)
+    {
+        return false;
+    }
     for (size_t square_index = 0; square_index < ARRAY_COUNT(current_position->squares);
         ++square_index)
     {
@@ -2668,7 +2965,7 @@ void init_game(Game*game)
     position->next_move_index = NULL_POSITION;
     position->previous_leaf_index = NULL_POSITION;
     position->next_leaf_index = NULL_POSITION;
-    position->active_player_index = WHITE_PLAYER_INDEX;
+    position->active_player_index = PLAYER_INDEX_WHITE;
     for (uint8_t player_index = 0; player_index < 2; ++player_index)
     {
         uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
@@ -2706,6 +3003,7 @@ void init_game(Game*game)
     main_window->clicked_control_id = NULL_CONTROL;
     game->draw_by_50_count = 0;
     game->run_engine = true;
+    game->is_promoting = false;
     game->times_left_as_of_last_move[0] = g_counts_per_second * game->seconds_left[0];
     game->times_left_as_of_last_move[1] = game->times_left_as_of_last_move[0];
     game->time_increment = g_counts_per_second * (game->increment[2].digit +
@@ -2751,5 +3049,4 @@ void init(Game*game, void*font_data, size_t font_data_size)
     digit->digit = 5;
     digit->is_before_colon = false;
     game->run_engine = false;
-    game->engine_player_index = BLACK_PLAYER_INDEX;
 }

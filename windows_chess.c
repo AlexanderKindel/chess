@@ -117,7 +117,7 @@ void handle_game_over_status(WindowsGame*game, HWND main_window_handle)
     case STATUS_CHECKMATE:
     {
         if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-            WHITE_PLAYER_INDEX)
+            PLAYER_INDEX_WHITE)
         {
             game->text = "Checkmate. Black wins.";
         }
@@ -140,7 +140,7 @@ void handle_game_over_status(WindowsGame*game, HWND main_window_handle)
     case STATUS_TIME_OUT:
     {
         if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-            WHITE_PLAYER_INDEX)
+            PLAYER_INDEX_WHITE)
         {
             game->text = "White is out of time. Black wins.";
         }
@@ -195,16 +195,16 @@ void run_message_loop(WindowsGame*game, HWND main_window_handle)
     }
 }
 
-char g_time_control_window_class_name[] = "Set Time Control";
+char g_setup_window_class_name[] = "Set Up Game";
 
-void draw_and_render_time_control_window(WindowsGame*game, HWND window_handle)
+void draw_and_render_setup_window(WindowsGame*game, HWND window_handle)
 {
-    Window*window = game->game.windows + WINDOW_TIME_CONTROL;
+    Window*window = game->game.windows + WINDOW_SETUP;
     draw_controls(&game->game, window);
     render_window(window, window_handle);
 }
 
-LRESULT CALLBACK time_control_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
+LRESULT CALLBACK setup_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
 {
     switch (message)
     {
@@ -212,10 +212,10 @@ LRESULT CALLBACK time_control_proc(HWND window_handle, UINT message, WPARAM w_pa
     {
         SetCapture(window_handle);
         WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_left_mouse_button_down(game->game.windows + WINDOW_TIME_CONTROL,
-            GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)))
+        if (handle_left_mouse_button_down(game->game.windows + WINDOW_SETUP, GET_X_LPARAM(l_param),
+            GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_time_control_window(game, window_handle);
+            draw_and_render_setup_window(game, window_handle);
         }
         return 0;
     }
@@ -223,17 +223,17 @@ LRESULT CALLBACK time_control_proc(HWND window_handle, UINT message, WPARAM w_pa
     {
         ReleaseCapture();
         WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        Window*window = game->game.windows + WINDOW_TIME_CONTROL;
+        Window*window = game->game.windows + WINDOW_SETUP;
         uint8_t old_clicked_control_id = window->clicked_control_id;
-        if (time_control_window_handle_left_mouse_button_up(&game->game, window,
-            GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)))
+        if (setup_window_handle_left_mouse_button_up(&game->game, window, GET_X_LPARAM(l_param),
+            GET_Y_LPARAM(l_param)))
         {
             DestroyWindow(window_handle);
             PostQuitMessage(0);
         }
         else if (window->clicked_control_id != old_clicked_control_id)
         {
-            draw_and_render_time_control_window(game, window_handle);
+            draw_and_render_setup_window(game, window_handle);
         }
         return 0;
     }
@@ -257,10 +257,9 @@ LRESULT CALLBACK time_control_proc(HWND window_handle, UINT message, WPARAM w_pa
             }
         }
         WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (time_control_window_handle_key_down(&game->game,
-            game->game.windows + WINDOW_TIME_CONTROL, w_param))
+        if (setup_window_handle_key_down(&game->game, game->game.windows + WINDOW_SETUP, w_param))
         {
-            draw_and_render_time_control_window(game, window_handle);
+            draw_and_render_setup_window(game, window_handle);
         }
         return 0;
     }
@@ -270,95 +269,20 @@ LRESULT CALLBACK time_control_proc(HWND window_handle, UINT message, WPARAM w_pa
         if (handle_mouse_move(game->game.windows + WINDOW_PROMOTION, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_time_control_window(game, window_handle);
+            draw_and_render_setup_window(game, window_handle);
         }
         return 0;
     }
     case WM_PAINT:
     {
-        draw_and_render_time_control_window(
-            (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA), window_handle);
+        draw_and_render_setup_window((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA),
+            window_handle);
         return 0;
     }
     case WM_SIZE:
     {
         resize_window(((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA))->
-            game.windows + WINDOW_TIME_CONTROL, LOWORD(l_param), HIWORD(l_param));
-        return 0;
-    }
-    default:
-    {
-        return DefWindowProc(window_handle, message, w_param, l_param);
-    }
-    }
-}
-
-char g_promotion_window_class_name[] = "Choose Promotion Type";
-
-void draw_and_render_promotion_window(WindowsGame*game, HWND window_handle)
-{
-    draw_promotion_window(&game->game);
-    render_window(game->game.windows + WINDOW_PROMOTION, window_handle);
-}
-
-LRESULT CALLBACK promotion_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
-{
-    switch (message)
-    {
-    case WM_LBUTTONDOWN:
-    {
-        SetCapture(window_handle);
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_left_mouse_button_down(game->game.windows + WINDOW_PROMOTION,
-            GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)))
-        {
-            draw_and_render_promotion_window(game, window_handle);
-        }
-        return 0;
-    }
-    case WM_LBUTTONUP:
-    {
-        ReleaseCapture();
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        Window*window = game->game.windows + WINDOW_PROMOTION;
-        uint8_t old_clicked_control_id = window->clicked_control_id;
-        uint8_t id =
-            handle_left_mouse_button_up(window, GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
-        if (id == NULL_CONTROL)
-        {
-            if (old_clicked_control_id != NULL_CONTROL)
-            {
-                draw_and_render_promotion_window(game, window_handle);
-            }
-        }
-        else
-        {
-            game->status = g_promotion_options[id];
-            DestroyWindow(window_handle);
-            PostQuitMessage(0);
-        }
-        return 0;
-    }
-    case WM_MOUSEMOVE:
-    {
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_mouse_move(game->game.windows + WINDOW_PROMOTION, GET_X_LPARAM(l_param),
-            GET_Y_LPARAM(l_param)))
-        {
-            draw_and_render_promotion_window(game, window_handle);
-        }
-        return 0;
-    }
-    case WM_PAINT:
-    {
-        draw_and_render_promotion_window(
-            (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA), window_handle);
-        return 0;
-    }
-    case WM_SIZE:
-    {
-        resize_window(((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA))->
-            game.windows + WINDOW_PROMOTION, LOWORD(l_param), HIWORD(l_param));
+            game.windows + WINDOW_SETUP, LOWORD(l_param), HIWORD(l_param));
         return 0;
     }
     default:
@@ -418,11 +342,11 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
         else if (id == window->controls[START_NEW_GAME].base_id)
         {
             DestroyWindow(window_handle);
-            HWND dialog_handle = CreateWindowEx(WS_EX_TOPMOST, g_time_control_window_class_name,
-                g_time_control_window_class_name, g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT,
+            HWND dialog_handle = CreateWindowEx(WS_EX_TOPMOST, g_setup_window_class_name,
+                g_setup_window_class_name, g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT,
                 CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
-            init_time_control_window(&game->game, GetDpiForWindow(dialog_handle));
-            run_dialog(game, game->game.windows + WINDOW_TIME_CONTROL, dialog_handle, 0);
+            init_setup_window(&game->game, GetDpiForWindow(dialog_handle));
+            run_dialog(game, game->game.windows + WINDOW_SETUP, dialog_handle, 0);
             PostQuitMessage(0);
             game->status = id;
             init_game(&game->game);
@@ -491,7 +415,7 @@ void handle_timer_update(WindowsGame*game, HWND main_window_handle)
     if (status & UPDATE_TIMER_TIME_OUT)
     {
         if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-            WHITE_PLAYER_INDEX)
+            PLAYER_INDEX_WHITE)
         {
             game->text = "White is out of time. Black wins.";
         }
@@ -541,7 +465,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         if (status & UPDATE_TIMER_TIME_OUT)
         {
             if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-                WHITE_PLAYER_INDEX)
+                PLAYER_INDEX_WHITE)
             {
                 game->text = "White is out of time. Black wins.";
             }
@@ -597,25 +521,6 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 save_game(open_file_name.lpstrFile, &game->game);
             }
             break;
-        }
-        case ACTION_PROMOTE:
-        {
-            HWND dialog_handle = CreateWindowEx(WS_EX_TOPMOST, g_promotion_window_class_name,
-                g_promotion_window_class_name, g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT,
-                CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
-            init_promotion_window(&game->game);
-            run_dialog(game, game->game.windows + WINDOW_PROMOTION, dialog_handle, window_handle);
-            select_promotion(&game->game, game->status);
-            BringWindowToTop(window_handle);
-        }
-        case ACTION_MOVE:
-        {
-            game->status = end_turn(&game->game);
-            draw_and_render_main_window(game, window_handle);
-            if (game->status == STATUS_END_TURN)
-            {
-                return 0;
-            }
         }
         case ACTION_CLAIM_DRAW:
         {
@@ -675,8 +580,8 @@ HWND windows_init(WindowsGame*game)
     WNDCLASSEX wc = { 0 };
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.hCursor = LoadCursor(0, IDC_ARROW);
-    wc.lpfnWndProc = time_control_proc;
-    wc.lpszClassName = g_time_control_window_class_name;
+    wc.lpfnWndProc = setup_proc;
+    wc.lpszClassName = g_setup_window_class_name;
     RegisterClassEx(&wc);
     wc.lpfnWndProc = start_window_proc;
     wc.lpszClassName = g_start_window_class_name;
@@ -710,33 +615,30 @@ HWND windows_init(WindowsGame*game)
     char exe_path[256];
     size_t exe_path_length =
         GetModuleFileNameA(0, exe_path, sizeof(exe_path)) + 1 - sizeof("windows_chess.exe");
-    load_piece_icon_bitmap(&game->game, PIECE_ROOK, WHITE_PLAYER_INDEX, "whiteRook.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_ROOK, PLAYER_INDEX_WHITE, "whiteRook.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KNIGHT, WHITE_PLAYER_INDEX, "whiteKnight.bin",
+    load_piece_icon_bitmap(&game->game, PIECE_KNIGHT, PLAYER_INDEX_WHITE, "whiteKnight.bin",
         exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_BISHOP, WHITE_PLAYER_INDEX, "whiteBishop.bin",
+    load_piece_icon_bitmap(&game->game, PIECE_BISHOP, PLAYER_INDEX_WHITE, "whiteBishop.bin",
         exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_QUEEN, WHITE_PLAYER_INDEX, "whiteQueen.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_QUEEN, PLAYER_INDEX_WHITE, "whiteQueen.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_PAWN, WHITE_PLAYER_INDEX, "whitePawn.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_PAWN, PLAYER_INDEX_WHITE, "whitePawn.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KING, WHITE_PLAYER_INDEX, "whiteKing.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_KING, PLAYER_INDEX_WHITE, "whiteKing.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_ROOK, BLACK_PLAYER_INDEX, "blackRook.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_ROOK, PLAYER_INDEX_BLACK, "blackRook.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KNIGHT, BLACK_PLAYER_INDEX, "blackKnight.bin",
+    load_piece_icon_bitmap(&game->game, PIECE_KNIGHT, PLAYER_INDEX_BLACK, "blackKnight.bin",
         exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_BISHOP, BLACK_PLAYER_INDEX, "blackBishop.bin",
+    load_piece_icon_bitmap(&game->game, PIECE_BISHOP, PLAYER_INDEX_BLACK, "blackBishop.bin",
         exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_QUEEN, BLACK_PLAYER_INDEX, "blackQueen.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_QUEEN, PLAYER_INDEX_BLACK, "blackQueen.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_PAWN, BLACK_PLAYER_INDEX, "blackPawn.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_PAWN, PLAYER_INDEX_BLACK, "blackPawn.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KING, BLACK_PLAYER_INDEX, "blackKing.bin", exe_path,
+    load_piece_icon_bitmap(&game->game, PIECE_KING, PLAYER_INDEX_BLACK, "blackKing.bin", exe_path,
         exe_path_length);
-    wc.lpfnWndProc = promotion_proc;
-    wc.lpszClassName = g_promotion_window_class_name;
-    RegisterClassEx(&wc);
     wc.lpfnWndProc = main_window_proc;
     wc.lpszClassName = "Chess";
     RegisterClassEx(&wc);
