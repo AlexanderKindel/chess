@@ -3,9 +3,15 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <setjmp.h>
 #include "platform_dependency.c"
+
+#ifdef DEBUG
+#define ASSERT(condition) if (!(condition)) *((int*)0) = 0
+#else
+#define ASSERT(condition)
+#endif
+
 
 #define ARRAY_COUNT(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -1533,6 +1539,7 @@ GameStatus do_engine_iteration(Game*game)
 {
     if (game->run_engine)
     {
+        uint16_t first_leaf_checked_index = game->next_leaf_to_evaluate_index;
         uint16_t position_to_evaluate_index = game->next_leaf_to_evaluate_index;
         Position*position;
         while (true)
@@ -1544,12 +1551,17 @@ GameStatus do_engine_iteration(Game*game)
             position = game->position_pool + position_to_evaluate_index;
             if (!position->has_been_evaluated)
             {
+                game->next_leaf_to_evaluate_index = position->next_leaf_index;
+                get_moves(game, position_to_evaluate_index);
+                break;
+            }
+            if (first_leaf_checked_index == position->next_leaf_index)
+            {
+                game->run_engine = false;
                 break;
             }
             position_to_evaluate_index = position->next_leaf_index;
         }
-        game->next_leaf_to_evaluate_index = position->next_leaf_index;
-        get_moves(game, position_to_evaluate_index);
     }
     if (!game->run_engine)
     {
@@ -2322,6 +2334,8 @@ void init_setup_window(Game*game, uint16_t dpi)
     set_setup_window_dpi(game, dpi);
     setup_window->pixels = 0;
     setup_window->pixel_buffer_capacity = 0;
+    setup_window->hovered_control_id = NULL_CONTROL;
+    setup_window->clicked_control_id = NULL_CONTROL;
     game->selected_digit_id = NULL_CONTROL;
 }
 
@@ -2373,6 +2387,8 @@ void init_start_window(Game*game, char*text, uint16_t dpi)
     button->button.label = "Quit";
     set_control_ids(start_window);
     set_start_window_dpi(game, text, dpi);
+    start_window->hovered_control_id = NULL_CONTROL;
+    start_window->clicked_control_id = NULL_CONTROL;
     start_window->pixels = 0;
     start_window->pixel_buffer_capacity = 0;
 }
@@ -2413,7 +2429,7 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
             uint8_t promotion_selector_base_id =
                 main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
             if (main_window->hovered_control_id >= promotion_selector_base_id &&
-                promotion_selector_base_id < promotion_selector_base_id +
+                main_window->hovered_control_id < promotion_selector_base_id +
                 ARRAY_COUNT(g_promotion_options) && !game->is_promoting)
             {
                 main_window->clicked_control_id = NULL_CONTROL;
@@ -2575,6 +2591,8 @@ void init_main_window(Game*game, uint16_t dpi)
     set_main_window_dpi(game, dpi);
     main_window->pixels = 0;
     main_window->pixel_buffer_capacity = 0;
+    main_window->hovered_control_id = NULL_CONTROL;
+    main_window->clicked_control_id = NULL_CONTROL;
 }
 
 void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_origin_y,
@@ -2588,12 +2606,12 @@ void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_or
     uint8_t max_piece_index = player_pieces_index + 16;
     for (size_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
     {
-        Piece*piece = current_position->pieces + piece_index;
-        if (piece->square_index == NULL_SQUARE)
+        Piece piece = current_position->pieces[piece_index];
+        if (piece.square_index == NULL_SQUARE)
         {
             if (draw_captured_pieces)
             {
-                draw_icon(game->icon_bitmaps[player_index][piece->piece_type], main_window,
+                draw_icon(game->icon_bitmaps[player_index][piece.piece_type], main_window,
                     captured_piece_min_x, captured_pieces_min_y);
                 captured_piece_min_x += game->square_size / 2;
             }
@@ -2601,7 +2619,7 @@ void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_or
         else
         {
             uint8_t screen_square_index =
-                SCREEN_SQUARE_INDEX(piece->square_index, game->engine_player_index);
+                SCREEN_SQUARE_INDEX(piece.square_index, game->engine_player_index);
             int32_t bitmap_min_x =
                 board->board.min_x + game->square_size * FILE(screen_square_index);
             int32_t bitmap_min_y =
@@ -2624,7 +2642,7 @@ void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_or
             }
             else
             {
-                draw_icon(game->icon_bitmaps[player_index][piece->piece_type], main_window,
+                draw_icon(game->icon_bitmaps[player_index][piece.piece_type], main_window,
                     bitmap_min_x, bitmap_min_y);
             }
         }
@@ -2718,78 +2736,100 @@ void draw_main_window(Game*game)
         !game->engine_player_index, !game->is_promoting);
 }
 
-void save_multi_byte_value(FILE*file, uint64_t value, size_t byte_count)
+void save_value(void**file_memory, void*value, uint32_t*file_size, size_t value_byte_count)
 {
-    for (size_t i = 0; i < byte_count; ++i)
+    *file_size += value_byte_count;
+    for (size_t i = 0; i < value_byte_count; ++i)
     {
-        fwrite((uint8_t*)&value + i, 1, 1, file);
+        **(uint8_t**)file_memory = ((uint8_t*)value)[i];
+        *file_memory = (void*)((uintptr_t)*file_memory + 1);
     }
 }
 
-uint64_t load_multi_byte_value(FILE*file, size_t byte_count)
+bool load_value(void**file_memory, void*out, uint32_t*file_size, size_t value_byte_count)
 {
-    uint64_t out = 0;
-    for (size_t i = 0; i < byte_count; ++i)
+    if (*file_size < value_byte_count)
     {
-        fread((uint8_t*)&out + i, 1, 1, file);
+        return false;
     }
-    return out;
+    else
+    {
+        *file_size -= value_byte_count;
+        for (size_t i = 0; i < value_byte_count; ++i)
+        {
+            ((uint8_t*)out)[i] = **(uint8_t**)file_memory;
+            *file_memory = (void*)((uintptr_t)*file_memory + 1);
+        }
+        return true;
+    }
 }
 
-void save_piece(FILE*file, Piece piece)
+void save_piece(void**file_memory, uint32_t*file_size, Piece piece)
 {
-    fwrite(&piece.square_index, 1, 1, file);
+    save_value(file_memory, &piece.square_index, file_size, sizeof(piece.square_index));
     if (piece.square_index != NULL_SQUARE)
     {
-        fwrite(&piece.times_moved, 1, 1, file);
+        save_value(file_memory, &piece.times_moved, file_size, sizeof(piece.times_moved));
     }
 }
 
-bool load_piece(FILE*file, Position*position, Piece*piece)
+bool load_piece(Piece*piece, Position*position, void**file_memory, uint32_t*file_size)
 {
-    fread(&piece->square_index, 1, 1, file);
+    if (!load_value(file_memory, &piece->square_index, file_size, sizeof(piece->square_index)))
+    {
+        return false;
+    }
     if (piece->square_index != NULL_SQUARE)
     {
         if (piece->square_index > NULL_SQUARE)
         {
             return false;
         }
-        fread(&piece->times_moved, 1, 1, file);
+        if (!load_value(file_memory, &piece->times_moved, file_size, sizeof(piece->times_moved)))
+        {
+            return false;
+        }
     }
     return true;
 }
 
-void save_game(char*file_path, Game*game)
+#define SAVE_FILE_STATIC_PART_SIZE 119
+
+uint32_t save_game(void*file_memory, Game*game)
 {
-    FILE*file = fopen(file_path, "wb");
     uint64_t time_since_last_move = get_time() - game->last_move_time;
-    save_multi_byte_value(file, time_since_last_move, sizeof(time_since_last_move));
-    save_multi_byte_value(file, game->time_increment, sizeof(game->time_increment));
+    uint32_t file_size = 0;
+    save_value(&file_memory, &time_since_last_move, &file_size, sizeof(time_since_last_move));
+    save_value(&file_memory, &game->time_increment, &file_size, sizeof(game->time_increment));
     Position*current_position = game->position_pool + game->current_position_index;
-    fwrite(&current_position->en_passant_file, 1, 1, file);
+    save_value(&file_memory, &current_position->en_passant_file, &file_size,
+        sizeof(current_position->en_passant_file));
     uint8_t active_player_index = current_position->active_player_index;
-    fwrite(&active_player_index, 1, 1, file);
+    save_value(&file_memory, &active_player_index, &file_size, sizeof(active_player_index));
     for (size_t player_index = 0; player_index < 2; ++player_index)
     {
-        save_multi_byte_value(file, game->times_left_as_of_last_move[player_index],
+        save_value(&file_memory, game->times_left_as_of_last_move + player_index, &file_size,
             sizeof(game->times_left_as_of_last_move[player_index]));
         uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
         Piece*player_pieces = current_position->pieces + player_pieces_index;
         for (size_t piece_index = 0; piece_index < A_PAWN_INDEX; ++piece_index)
         {
-            save_piece(file, player_pieces[piece_index]);
+            save_piece(&file_memory, &file_size, player_pieces[piece_index]);
         }
         for (size_t piece_index = A_PAWN_INDEX; piece_index < A_PAWN_INDEX + 8; ++piece_index)
         {
             Piece piece = player_pieces[piece_index];
             uint8_t piece_type = piece.piece_type;
-            fwrite(&piece_type, 1, 1, file);
-            save_piece(file, piece);
+            save_value(&file_memory, &piece_type, &file_size, sizeof(piece_type));
+            save_piece(&file_memory, &file_size, piece);
         }
     }
-    fwrite(&game->selected_piece_index, 1, 1, file);
-    save_multi_byte_value(file, game->draw_by_50_count, sizeof(game->draw_by_50_count));
-    save_multi_byte_value(file, game->unique_state_count, sizeof(game->unique_state_count));
+    save_value(&file_memory, &game->draw_by_50_count, &file_size, sizeof(game->draw_by_50_count));
+    save_value(&file_memory, &game->engine_player_index, &file_size,
+        sizeof(game->engine_player_index));
+    save_value(&file_memory, &game->unique_state_count, &file_size,
+        sizeof(game->unique_state_count));
+    ASSERT(file_size <= SAVE_FILE_STATIC_PART_SIZE);
     BoardStateNode*external_nodes = EXTERNAL_STATE_NODES(game);
     for (size_t bucket_index = 0; bucket_index < game->state_bucket_count; ++bucket_index)
     {
@@ -2798,10 +2838,10 @@ void save_game(char*file_path, Game*game)
         {
             while (true)
             {
-                save_multi_byte_value(file, node->state.square_mask,
+                save_value(&file_memory, &node->state.square_mask, &file_size,
                     sizeof(node->state.square_mask));
-                fwrite(node->state.occupied_square_hashes, 1,
-                    ARRAY_COUNT(node->state.occupied_square_hashes), file);
+                save_value(&file_memory, &node->state.occupied_square_hashes, &file_size,
+                    sizeof(node->state.occupied_square_hashes));
                 if (node->index_of_next_node != NULL_STATE)
                 {
                     node = external_nodes + node->index_of_next_node;
@@ -2813,24 +2853,30 @@ void save_game(char*file_path, Game*game)
             }
         }
     }
-    fwrite(&game->engine_player_index, 1, 1, file);
-    fwrite(&game->is_promoting, 1, 1, file);
-    fclose(file);
+    return file_size;
 }
 
-bool load_file(FILE*file, Game*game)
+bool load_file(Game*game, void*file_memory, uint32_t file_size)
 {
-    uint64_t time_since_last_move = load_multi_byte_value(file, sizeof(time_since_last_move));
-    game->time_increment = load_multi_byte_value(file, sizeof(game->time_increment));
+    uint64_t time_since_last_move;
+    if (!load_value(&file_memory, &time_since_last_move, &file_size, sizeof(time_since_last_move)))
+    {
+        return false;
+    }
+    if (!load_value(&file_memory, &game->time_increment, &file_size, sizeof(game->time_increment)))
+    {
+        return false;
+    }
     Position*current_position = game->position_pool + game->first_leaf_index;
-    fread(&current_position->en_passant_file, 1, 1, file);
-    if (current_position->en_passant_file > FILE_COUNT)
+    if (!load_value(&file_memory, &current_position->en_passant_file, &file_size,
+        sizeof(current_position->en_passant_file)) ||
+        current_position->en_passant_file > FILE_COUNT)
     {
         return false;
     }
     uint8_t active_player_index;
-    fread(&active_player_index, 1, 1, file);
-    if (active_player_index > 1)
+    if (!load_value(&file_memory, &active_player_index, &file_size, sizeof(active_player_index)) ||
+        active_player_index > 1)
     {
         return false;
     }
@@ -2838,13 +2884,17 @@ bool load_file(FILE*file, Game*game)
     for (size_t player_index = 0; player_index < 2; ++player_index)
     {
         uint64_t*time_left_as_of_last_move = game->times_left_as_of_last_move + player_index;
-        *time_left_as_of_last_move =
-            load_multi_byte_value(file, sizeof(*time_left_as_of_last_move));
+        if (!load_value(&file_memory, time_left_as_of_last_move, &file_size,
+            sizeof(*time_left_as_of_last_move)))
+        {
+            return false;
+        }
         game->seconds_left[player_index] = *time_left_as_of_last_move / g_counts_per_second;
         Piece*player_pieces = current_position->pieces + PLAYER_PIECES_INDEX(player_index);
         for (size_t piece_index = 0; piece_index < A_PAWN_INDEX; ++piece_index)
         {
-            if (!load_piece(file, current_position, player_pieces + piece_index))
+            if (!load_piece(player_pieces + piece_index, current_position, &file_memory,
+                &file_size))
             {
                 return false;
             }
@@ -2853,13 +2903,13 @@ bool load_file(FILE*file, Game*game)
         {
             Piece*piece = player_pieces + piece_index;
             uint8_t piece_type;
-            fread(&piece_type, 1, 1, file);
-            if (piece_type >= PIECE_TYPE_COUNT)
+            if (!load_value(&file_memory, &piece_type, &file_size, sizeof(piece_type)) ||
+                piece_type >= PIECE_TYPE_COUNT)
             {
                 return false;
             }
             piece->piece_type = piece_type;
-            if (!load_piece(file, current_position, piece))
+            if (!load_piece(piece, current_position, &file_memory, &file_size))
             {
                 return false;
             }
@@ -2877,13 +2927,21 @@ bool load_file(FILE*file, Game*game)
     {
         return false;
     }
-    fread(&game->selected_piece_index, 1, 1, file);
-    if (game->selected_piece_index > NULL_PIECE)
+    if (!load_value(&file_memory, &game->draw_by_50_count, &file_size,
+        sizeof(game->draw_by_50_count)))
     {
         return false;
     }
-    game->draw_by_50_count = load_multi_byte_value(file, sizeof(game->draw_by_50_count));
-    game->unique_state_count = load_multi_byte_value(file, sizeof(game->unique_state_count));
+    if (!load_value(&file_memory, &game->engine_player_index, &file_size,
+        sizeof(game->engine_player_index)) || game->engine_player_index > PLAYER_INDEX_BLACK)
+    {
+        return false;
+    }
+    if (!load_value(&file_memory, &game->unique_state_count, &file_size,
+        sizeof(game->unique_state_count)))
+    {
+        return false;
+    }
     uint32_t bucket_count_bit_count;
     BIT_SCAN_REVERSE(&bucket_count_bit_count, game->unique_state_count);
     uint16_t state_bucket_count = 1 << bucket_count_bit_count;
@@ -2895,15 +2953,20 @@ bool load_file(FILE*file, Game*game)
     for (uint16_t i = 0; i < game->unique_state_count; ++i)
     {
         BoardState state;
-        state.square_mask = load_multi_byte_value(file, sizeof(state.square_mask));
-        fread(&state.occupied_square_hashes, 1, ARRAY_COUNT(state.occupied_square_hashes), file);
+        if (!load_value(&file_memory, &state.square_mask, &file_size, sizeof(state.square_mask)))
+        {
+            return false;
+        }
+        for (size_t square_hash_index = 0;
+            square_hash_index < ARRAY_COUNT(state.occupied_square_hashes); ++square_hash_index)
+        {
+            if (!load_value(&file_memory, state.occupied_square_hashes + square_hash_index,
+                &file_size, sizeof(*state.occupied_square_hashes)))
+            {
+                return false;
+            }
+        }
         archive_board_state(game, &state);
-    }
-    fread(&game->engine_player_index, 1, 1, file);
-    fread(&game->is_promoting, 1, 1, file);
-    if (game->engine_player_index > PLAYER_INDEX_BLACK)
-    {
-        return false;
     }
     for (size_t square_index = 0; square_index < ARRAY_COUNT(current_position->squares);
         ++square_index)
@@ -2912,7 +2975,11 @@ bool load_file(FILE*file, Game*game)
     }
     for (size_t piece_index = 0; piece_index < ARRAY_COUNT(current_position->pieces); ++piece_index)
     {
-        current_position->squares[current_position->pieces[piece_index].square_index] = piece_index;
+        Piece piece = current_position->pieces[piece_index];
+        if (piece.square_index != NULL_SQUARE)
+        {
+            current_position->squares[piece.square_index] = piece_index;
+        }
     }
     current_position->parent_index = NULL_POSITION;
     current_position->next_move_index = NULL_POSITION;
@@ -2920,20 +2987,22 @@ bool load_file(FILE*file, Game*game)
     current_position->next_leaf_index = NULL_POSITION;
     make_move_current(game, game->first_leaf_index);
     game->last_move_time = get_time() - time_since_last_move;
+    game->selected_piece_index = NULL_PIECE;
     return true;
 }
 
-bool load_game(char*file_path, Game*game)
+bool load_game(Game*game, void*file_memory, uint32_t file_size)
 {
     game->first_leaf_index = allocate_position(game);
-    FILE*file = fopen(file_path, "rb");
-    bool out = load_file(file, game);
-    if (!out)
+    bool out = load_file(game, file_memory, file_size);
+    if (out)
+    {
+        game->run_engine = true;
+    }
+    else
     {
         free_position(game, game->first_leaf_index);
     }
-    fclose(file);
-    game->run_engine = true;
     return out;
 }
 

@@ -330,13 +330,38 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
             open_file_name.lpstrFile = file_name;
             open_file_name.nMaxFile = ARRAY_COUNT(file_name);
             open_file_name.lpstrDefExt = "chs";
-            if (GetOpenFileNameA(&open_file_name) &&
-                load_game(open_file_name.lpstrFile, &game->game))
+            if (GetOpenFileNameA(&open_file_name))
             {
-                game->status = id;
-                DestroyWindow(window_handle);
-                PostQuitMessage(0);
-                return 0;
+                HANDLE file_handle = CreateFileA(open_file_name.lpstrFile, GENERIC_READ,
+                    FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+                if (file_handle != INVALID_HANDLE_VALUE)
+                {
+                    LARGE_INTEGER file_size;
+                    if (GetFileSizeEx(file_handle, &file_size))
+                    {
+                        void*file_memory =
+                            VirtualAlloc(0, file_size.QuadPart, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+                        if (file_memory)
+                        {
+                            DWORD bytes_read;
+                            if (ReadFile(file_handle, file_memory, (DWORD)file_size.QuadPart,
+                                &bytes_read, 0))
+                            {
+                                if (bytes_read == file_size.QuadPart)
+                                {
+                                    CloseHandle(file_handle);
+                                    load_game(&game->game, file_memory, file_size.QuadPart);
+                                    game->status = id;
+                                    DestroyWindow(window_handle);
+                                    PostQuitMessage(0);
+                                    return 0;
+                                }
+                            }
+                            VirtualFree(file_memory, 0, MEM_RELEASE);
+                        }
+                    }
+                    CloseHandle(file_handle);
+                }
             }
         }
         else if (id == window->controls[START_NEW_GAME].base_id)
@@ -518,7 +543,19 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             open_file_name.lpstrDefExt = "chs";
             if (GetSaveFileNameA(&open_file_name))
             {
-                save_game(open_file_name.lpstrFile, &game->game);
+                HANDLE file_handle =
+                    CreateFileA(open_file_name.lpstrFile, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+                if (file_handle != INVALID_HANDLE_VALUE)
+                {
+                    void*file_memory = VirtualAlloc(0, SAVE_FILE_STATIC_PART_SIZE +
+                            game->game.unique_state_count * sizeof(BoardState),
+                        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                    uint32_t file_size = save_game(file_memory, &game->game);
+                    DWORD bytes_written;
+                    WriteFile(file_handle, file_memory, file_size, &bytes_written, 0);
+                    VirtualFree(file_memory, 0, MEM_RELEASE);
+                    CloseHandle(file_handle);
+                }
             }
             break;
         }
