@@ -1153,6 +1153,41 @@ void get_moves(Game*game, uint16_t position_index)
     else
     {
         position->evaluation = 0;
+        for (size_t player_index = 0; player_index < 2; ++player_index)
+        {
+            int64_t point = FORWARD_DELTA(!player_index);
+            Piece*player_pieces = position->pieces + PLAYER_PIECES_INDEX(player_index);
+            for (size_t piece_index = 0; piece_index < 16; ++piece_index)
+            {
+                Piece piece = player_pieces[piece_index];
+                if (piece.square_index < NULL_SQUARE)
+                {
+                    switch (piece.piece_type)
+                    {
+                    case PIECE_PAWN:
+                    {
+                        position->evaluation += point;
+                        break;
+                    }
+                    case PIECE_BISHOP:
+                    case PIECE_KNIGHT:
+                    {
+                        position->evaluation += 3 * point;
+                        break;
+                    }
+                    case PIECE_ROOK:
+                    {
+                        position->evaluation += 5 * point;
+                        break;
+                    }
+                    case PIECE_QUEEN:
+                    {
+                        position->evaluation += 9 * point;
+                    }
+                    }
+                }
+            }
+        }
     }
     while (position->parent_index != NULL_POSITION)
     {
