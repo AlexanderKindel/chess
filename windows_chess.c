@@ -430,28 +430,6 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
     }
 }
 
-void handle_timer_update(WindowsGame*game, HWND main_window_handle)
-{
-    UpdateTimerStatus status = update_timer(&game->game);
-    if (status & UPDATE_TIMER_REDRAW)
-    {
-        draw_and_render_main_window(game, main_window_handle);
-    }
-    if (status & UPDATE_TIMER_TIME_OUT)
-    {
-        if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-            PLAYER_INDEX_WHITE)
-        {
-            game->text = "White is out of time. Black wins.";
-        }
-        else
-        {
-            game->text = "Black is out of time. White wins.";
-        }
-        run_game_over_dialog(game, main_window_handle);
-    }
-}
-
 LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
 {
     switch (message)

@@ -6,13 +6,6 @@
 #include <setjmp.h>
 #include "platform_dependency.c"
 
-#ifdef DEBUG
-#define ASSERT(condition) if (!(condition)) *((int*)0) = 0
-#else
-#define ASSERT(condition)
-#endif
-
-
 #define ARRAY_COUNT(arr) (sizeof(arr) / sizeof(arr[0]))
 
 char g_codepoints[] = { ' ', '.', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', 'B', 'C',
@@ -163,13 +156,13 @@ typedef struct Position
         };
         uint16_t first_move_index;
     };
-    int64_t evaluation;
+    int16_t evaluation;
     uint16_t parent_index;
     uint16_t next_move_index;
     uint8_t en_passant_file;
     uint8_t active_player_index : 1;
     bool reset_draw_by_50_count : 1;
-    bool has_been_evaluated : 1;
+    bool moves_have_been_found : 1;
     bool is_leaf : 1;
 } Position;
 
@@ -300,6 +293,36 @@ typedef enum Player0PieceIndices
     A_PAWN_INDEX
 } Player0PieceIndices;
 
+#ifdef DEBUG
+#define ASSERT(condition) if (!(condition)) *((int*)0) = 0
+
+void export_position_tree(Game*game)
+{
+    if (game->engine_player_index ==
+        game->position_pool[game->current_position_index].active_player_index)
+    {
+        HANDLE file_handle = CreateFileA("move_tree", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+        if (file_handle != INVALID_HANDLE_VALUE)
+        {
+            DWORD bytes_written;
+            WriteFile(file_handle, &game->current_position_index,
+                sizeof(game->current_position_index), &bytes_written, 0);
+            OVERLAPPED overlapped = { 0 };
+            overlapped.Offset = 0xffffffff;
+            overlapped.OffsetHigh = 0xffffffff;
+            WriteFile(file_handle, game->position_pool, NULL_POSITION * sizeof(Position),
+                &bytes_written, &overlapped);
+            CloseHandle(file_handle);
+        }
+    }
+}
+
+#define EXPORT_POSITION_TREE(game) export_position_tree(game)
+#else
+#define ASSERT(condition)
+#define EXPORT_POSITION_TREE(game)
+#endif
+
 #define PLAYER_INDEX(piece_index) ((piece_index) >> 4)
 #define KING_RANK(player_index) (7 * !(player_index))
 #define FORWARD_DELTA(player_index) (((player_index) << 1) - 1)
@@ -310,7 +333,7 @@ typedef enum Player0PieceIndices
 #define EXTERNAL_STATE_NODES(game) ((game)->state_buckets + (game)->state_bucket_count)
 #define PLAYER_PIECES_INDEX(player_index) ((player_index) << 4)
 #define EN_PASSANT_RANK(player_index, forward_delta) KING_RANK(player_index) + ((forward_delta) << 2)
-#define PLAYER_WIN(player_index) (((int64_t[]){INT64_MAX, -INT64_MAX})[player_index])
+#define PLAYER_WIN(player_index) (((int16_t[]){INT16_MAX, -INT16_MAX})[player_index])
 
 size_t g_page_size;
 uint64_t g_counts_per_second;
@@ -653,7 +676,7 @@ uint16_t allocate_position(Game*game)
     }
     new_position->en_passant_file = FILE_COUNT;
     new_position->reset_draw_by_50_count = false;
-    new_position->has_been_evaluated = false;
+    new_position->moves_have_been_found = false;
     new_position->is_leaf = true;
     return new_position_index;
 }
@@ -1138,89 +1161,108 @@ void get_moves(Game*game, uint16_t position_index)
         }
         }
     }
-    position->has_been_evaluated = true;
+    position->moves_have_been_found = true;
     if (position->is_leaf)
     {
+        int16_t new_evaluation;
         if (player_is_checked(position, position->active_player_index))
         {
-            position->evaluation = PLAYER_WIN(!position->active_player_index);
+            new_evaluation = PLAYER_WIN(!position->active_player_index);
         }
         else
         {
-            position->evaluation = 0;
+            new_evaluation = 0;
+        }
+        if (new_evaluation == position->evaluation)
+        {
+            return;
+        }
+        else
+        {
+            position->evaluation = new_evaluation;
+            if (position->parent_index == NULL_POSITION)
+            {
+                return;
+            }
         }
     }
     else
     {
-        position->evaluation = 0;
-        for (size_t player_index = 0; player_index < 2; ++player_index)
+        Position*move = game->position_pool + position->first_move_index;
+        while (true)
         {
-            int64_t point = FORWARD_DELTA(!player_index);
-            Piece*player_pieces = position->pieces + PLAYER_PIECES_INDEX(player_index);
-            for (size_t piece_index = 0; piece_index < 16; ++piece_index)
+            for (size_t player_index = 0; player_index < 2; ++player_index)
             {
-                Piece piece = player_pieces[piece_index];
-                if (piece.square_index < NULL_SQUARE)
+                int16_t point = FORWARD_DELTA(!player_index);
+                Piece*player_pieces = position->pieces + PLAYER_PIECES_INDEX(player_index);
+                for (size_t piece_index = 0; piece_index < 16; ++piece_index)
                 {
-                    switch (piece.piece_type)
+                    Piece piece = player_pieces[piece_index];
+                    if (piece.square_index < NULL_SQUARE)
                     {
-                    case PIECE_PAWN:
-                    {
-                        position->evaluation += point;
-                        break;
-                    }
-                    case PIECE_BISHOP:
-                    case PIECE_KNIGHT:
-                    {
-                        position->evaluation += 3 * point;
-                        break;
-                    }
-                    case PIECE_ROOK:
-                    {
-                        position->evaluation += 5 * point;
-                        break;
-                    }
-                    case PIECE_QUEEN:
-                    {
-                        position->evaluation += 9 * point;
-                    }
+                        switch (piece.piece_type)
+                        {
+                        case PIECE_PAWN:
+                        {
+                            move->evaluation += point;
+                            break;
+                        }
+                        case PIECE_BISHOP:
+                        case PIECE_KNIGHT:
+                        {
+                            move->evaluation += 3 * point;
+                            break;
+                        }
+                        case PIECE_ROOK:
+                        {
+                            move->evaluation += 5 * point;
+                            break;
+                        }
+                        case PIECE_QUEEN:
+                        {
+                            move->evaluation += 9 * point;
+                        }
+                        }
                     }
                 }
             }
+            if (move->next_move_index == NULL_POSITION)
+            {
+                break;
+            }
+            move = game->position_pool + move->next_move_index;
         }
     }
-    while (position->parent_index != NULL_POSITION)
+    while (true)
     {
-        position = game->position_pool + position->parent_index;
-        int64_t new_evaluation = PLAYER_WIN(!position->active_player_index);
+        int16_t new_evaluation = PLAYER_WIN(!position->active_player_index);
         uint16_t move_index = position->first_move_index;
         while (move_index != NULL_POSITION)
         {
             Position*move = game->position_pool + move_index;
-            if (move->has_been_evaluated)
+            if (position->active_player_index == PLAYER_INDEX_WHITE)
             {
-                if (position->active_player_index == PLAYER_INDEX_WHITE)
-                {
-                    if (move->evaluation > new_evaluation)
-                    {
-                        new_evaluation = move->evaluation;
-                    }
-                }
-                else if (move->evaluation < new_evaluation)
+                if (move->evaluation > new_evaluation)
                 {
                     new_evaluation = move->evaluation;
                 }
+            }
+            else if (move->evaluation < new_evaluation)
+            {
+                new_evaluation = move->evaluation;
             }
             move_index = move->next_move_index;
         }
         if (new_evaluation == position->evaluation)
         {
-            break;
+            return;
         }
-        else
+        position->evaluation = new_evaluation;
+        if (position->parent_index == NULL_POSITION)
         {
-            position->evaluation = new_evaluation;
+            return;
         }
+        position = game->position_pool + position->parent_index;
     }
 }
 
@@ -1234,7 +1276,7 @@ bool make_move_current(Game*game, uint16_t move_index)
         ++game->state_generation;
     }
     ++game->draw_by_50_count;
-    if (!position->has_been_evaluated)
+    if (!position->moves_have_been_found)
     {
         get_moves(game, game->current_position_index);
     }
@@ -1584,7 +1626,7 @@ GameStatus do_engine_iteration(Game*game)
                 position_to_evaluate_index = game->first_leaf_index;
             }
             position = game->position_pool + position_to_evaluate_index;
-            if (!position->has_been_evaluated)
+            if (!position->moves_have_been_found)
             {
                 game->next_leaf_to_evaluate_index = position->next_leaf_index;
                 get_moves(game, position_to_evaluate_index);
@@ -1609,7 +1651,7 @@ GameStatus do_engine_iteration(Game*game)
             while (*move_index != NULL_POSITION)
             {
                 Position*move = game->position_pool + *move_index;
-                if (move->has_been_evaluated)
+                if (move->moves_have_been_found)
                 {
                     if (game->engine_player_index == PLAYER_INDEX_WHITE)
                     {
@@ -1627,6 +1669,7 @@ GameStatus do_engine_iteration(Game*game)
                 }
                 move_index = &move->next_move_index;
             }
+            EXPORT_POSITION_TREE(game);
             return end_turn(game);
         }
     }
