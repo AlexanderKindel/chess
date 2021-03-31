@@ -110,11 +110,16 @@ void run_game_over_dialog(WindowsGame*game, HWND main_window_handle)
     }
 }
 
-void handle_game_over_status(WindowsGame*game, HWND main_window_handle)
+void handle_turn_action(WindowsGame*game, HWND main_window_handle, GUIAction action)
 {
-    switch (game->status)
+    if (action == ACTION_NONE)
     {
-    case STATUS_CHECKMATE:
+        return;
+    }
+    draw_and_render_main_window(game, main_window_handle);
+    switch (action)
+    {
+    case ACTION_CHECKMATE:
     {
         if (game->game.position_pool[game->game.current_position_index].active_player_index ==
             PLAYER_INDEX_WHITE)
@@ -127,17 +132,7 @@ void handle_game_over_status(WindowsGame*game, HWND main_window_handle)
         }
         break;
     }
-    case STATUS_REPETITION:
-    {
-        game->text = "Draw by repetition.";
-        break;
-    }
-    case STATUS_STALEMATE:
-    {
-        game->text = "Stalemate.";
-        break;
-    }
-    case STATUS_TIME_OUT:
+    case ACTION_FLAG:
     {
         if (game->game.position_pool[game->game.current_position_index].active_player_index ==
             PLAYER_INDEX_WHITE)
@@ -149,6 +144,20 @@ void handle_game_over_status(WindowsGame*game, HWND main_window_handle)
             game->text = "Black is out of time. White wins.";
         }
         break;
+    }
+    case ACTION_REPETITION_DRAW:
+    {
+        game->text = "Draw by repetition.";
+        break;
+    }
+    case ACTION_STALEMATE:
+    {
+        game->text = "Stalemate.";
+        break;
+    }
+    default:
+    {
+        return;
     }
     }
     run_game_over_dialog(game, main_window_handle);
@@ -170,15 +179,7 @@ void run_message_loop(WindowsGame*game, HWND main_window_handle)
                 TranslateMessage(&message);
                 DispatchMessage(&message);
             }
-            game->status = do_engine_iteration(&game->game);
-            if (game->status != STATUS_CONTINUE)
-            {
-                draw_and_render_main_window(game, main_window_handle);
-                if (game->status != STATUS_END_TURN)
-                {
-                    handle_game_over_status(game, main_window_handle);
-                }
-            }
+            handle_turn_action(game, main_window_handle, do_engine_iteration(&game->game));
         }
         else
         {
@@ -506,10 +507,9 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     case WM_LBUTTONUP:
     {
         ReleaseCapture();
-        switch (main_window_handle_left_mouse_button_up(&game->game, GET_X_LPARAM(l_param),
-            GET_Y_LPARAM(l_param)))
-        {
-        case ACTION_SAVE_GAME:
+        GUIAction action = main_window_handle_left_mouse_button_up(&game->game,
+            GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
+        if (action == ACTION_SAVE_GAME)
         {
             draw_and_render_main_window(game, window_handle);
             char file_name[256];
@@ -526,7 +526,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 if (file_handle != INVALID_HANDLE_VALUE)
                 {
                     void*file_memory = VirtualAlloc(0, SAVE_FILE_STATIC_PART_SIZE +
-                            game->game.unique_state_count * sizeof(BoardState),
+                        game->game.unique_state_count * sizeof(BoardState),
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
                     uint32_t file_size = save_game(file_memory, &game->game);
                     DWORD bytes_written;
@@ -535,18 +535,10 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                     CloseHandle(file_handle);
                 }
             }
-            break;
         }
-        case ACTION_CLAIM_DRAW:
+        else
         {
-            handle_game_over_status(game, window_handle);
-            break;
-        }
-        case ACTION_REDRAW:
-        {
-            draw_and_render_main_window(game, window_handle);
-            break;
-        }
+            handle_turn_action(game, window_handle, action);
         }
         return 0;
     }

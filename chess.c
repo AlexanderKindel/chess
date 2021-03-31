@@ -385,16 +385,6 @@ void increment_unique_state_count(Game*game)
     }
 }
 
-typedef enum GameStatus
-{
-    STATUS_CHECKMATE,
-    STATUS_END_TURN,
-    STATUS_REPETITION,
-    STATUS_STALEMATE,
-    STATUS_TIME_OUT,
-    STATUS_CONTINUE
-} GameStatus;
-
 bool archive_board_state(Game*game, BoardState*state)
 {
     //FNV hash the state into an index less than game->state_bucket_count.
@@ -948,10 +938,10 @@ void get_moves(Game*game, uint16_t position_index)
     Position*position = game->position_pool + position_index;
     if (setjmp(out_of_memory_jump_buffer))
     {
-        uint16_t move_index = position->first_move_index;
-        Position*move = game->position_pool + move_index;
         if (!position->is_leaf)
         {
+            uint16_t move_index = position->first_move_index;
+            Position*move = game->position_pool + move_index;
             position->is_leaf = true;
             position->previous_leaf_index = move->previous_leaf_index;
             while (true)
@@ -962,10 +952,7 @@ void get_moves(Game*game, uint16_t position_index)
                     free_position(game, move_index);
                     break;
                 }
-                else
-                {
-                    free_position(game, move_index);
-                }
+                free_position(game, move_index);
                 move_index = move->next_move_index;
                 move = game->position_pool + move_index;
             }
@@ -1177,24 +1164,23 @@ void get_moves(Game*game, uint16_t position_index)
         {
             return;
         }
-        else
+        position->evaluation = new_evaluation;
+        if (position->parent_index == NULL_POSITION)
         {
-            position->evaluation = new_evaluation;
-            if (position->parent_index == NULL_POSITION)
-            {
-                return;
-            }
+            return;
         }
+        position = game->position_pool + position->parent_index;
     }
     else
     {
         Position*move = game->position_pool + position->first_move_index;
         while (true)
         {
+            move->evaluation = 0;
             for (size_t player_index = 0; player_index < 2; ++player_index)
             {
                 int16_t point = FORWARD_DELTA(!player_index);
-                Piece*player_pieces = position->pieces + PLAYER_PIECES_INDEX(player_index);
+                Piece*player_pieces = move->pieces + PLAYER_PIECES_INDEX(player_index);
                 for (size_t piece_index = 0; piece_index < 16; ++piece_index)
                 {
                     Piece piece = player_pieces[piece_index];
@@ -1514,9 +1500,9 @@ uint16_t get_last_tree_leaf_index(Game*game, uint16_t root_position_index)
         return root_position_index;
     }
     uint16_t out = position->first_move_index;
-    position = game->position_pool + out;
     while (true)
     {
+        position = game->position_pool + out;
         if (position->next_move_index == NULL_POSITION)
         {
             if (position->is_leaf)
@@ -1526,18 +1512,28 @@ uint16_t get_last_tree_leaf_index(Game*game, uint16_t root_position_index)
             else
             {
                 out = position->first_move_index;
-                position = game->position_pool + out;
             }
         }
         else
         {
             out = position->next_move_index;
-            position = game->position_pool + out;
         }
     }
 }
 
-GameStatus end_turn(Game*game)
+typedef enum GUIAction
+{
+    ACTION_CHECKMATE,
+    ACTION_CLAIM_DRAW,
+    ACTION_REPETITION_DRAW,
+    ACTION_FLAG,
+    ACTION_NONE,
+    ACTION_REDRAW,
+    ACTION_SAVE_GAME,
+    ACTION_STALEMATE
+} GUIAction;
+
+GUIAction end_turn(Game*game)
 {
     uint64_t move_time = get_time();
     uint64_t time_since_last_move = move_time - game->last_move_time;
@@ -1547,7 +1543,7 @@ GameStatus end_turn(Game*game)
     if (time_since_last_move >= *time_left_as_of_last_move)
     {
         game->seconds_left[active_player_index] = 0;
-        return STATUS_TIME_OUT;
+        return ACTION_FLAG;
     }
     *time_left_as_of_last_move -= time_since_last_move;
     if (g_max_time - game->time_increment >= *time_left_as_of_last_move)
@@ -1591,28 +1587,28 @@ GameStatus end_turn(Game*game)
     {
         if (move->is_leaf)
         {
-            if (move->evaluation == PLAYER_WIN(move->active_player_index))
+            if (move->evaluation == PLAYER_WIN(!move->active_player_index))
             {
-                return STATUS_CHECKMATE;
+                return ACTION_CHECKMATE;
             }
             else
             {
-                return STATUS_STALEMATE;
+                return ACTION_STALEMATE;
             }
         }
         else
         {
             game->run_engine = true;
-            return STATUS_END_TURN;
+            return ACTION_REDRAW;
         }
     }
     else
     {
-        return STATUS_REPETITION;
+        return ACTION_REPETITION_DRAW;
     }
 }
 
-GameStatus do_engine_iteration(Game*game)
+GUIAction do_engine_iteration(Game*game)
 {
     if (game->run_engine)
     {
@@ -1651,21 +1647,18 @@ GameStatus do_engine_iteration(Game*game)
             while (*move_index != NULL_POSITION)
             {
                 Position*move = game->position_pool + *move_index;
-                if (move->moves_have_been_found)
+                if (game->engine_player_index == PLAYER_INDEX_WHITE)
                 {
-                    if (game->engine_player_index == PLAYER_INDEX_WHITE)
-                    {
-                        if (move->evaluation > best_evaluation)
-                        {
-                            best_evaluation = move->evaluation;
-                            game->selected_move_index = move_index;
-                        }
-                    }
-                    else if (move->evaluation < best_evaluation)
+                    if (move->evaluation > best_evaluation)
                     {
                         best_evaluation = move->evaluation;
                         game->selected_move_index = move_index;
                     }
+                }
+                else if (move->evaluation < best_evaluation)
+                {
+                    best_evaluation = move->evaluation;
+                    game->selected_move_index = move_index;
                 }
                 move_index = &move->next_move_index;
             }
@@ -1673,7 +1666,7 @@ GameStatus do_engine_iteration(Game*game)
             return end_turn(game);
         }
     }
-    return STATUS_CONTINUE;
+    return ACTION_NONE;
 }
 
 int32_t min32(int32_t a, int32_t b)
@@ -2517,16 +2510,7 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
     return main_window->clicked_control_id != NULL_CONTROL;
 }
 
-typedef enum MainWindowLeftButtonUpAction
-{
-    ACTION_REDRAW,
-    ACTION_SAVE_GAME,
-    ACTION_CLAIM_DRAW,
-    ACTION_NONE
-} MainWindowLeftButtonUpAction;
-
-MainWindowLeftButtonUpAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x,
-    int32_t cursor_y)
+GUIAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x, int32_t cursor_y)
 {
     Window*main_window = game->windows + WINDOW_MAIN;
     if (main_window->clicked_control_id == NULL_CONTROL)
@@ -2600,13 +2584,9 @@ MainWindowLeftButtonUpAction main_window_handle_left_mouse_button_up(Game*game, 
                             move->pieces[game->selected_piece_index].piece_type)
                         {
                             game->is_promoting = true;
+                            return ACTION_REDRAW;
                         }
-                        else
-                        {
-                            end_turn(game);
-                        }
-                        main_window->clicked_control_id = NULL_CONTROL;
-                        return ACTION_REDRAW;
+                        return end_turn(game);
                     }
                     game->selected_move_index = &move->next_move_index;
                 } while (*game->selected_move_index != NULL_POSITION);
