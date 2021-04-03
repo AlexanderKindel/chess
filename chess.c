@@ -377,7 +377,7 @@ void export_position_tree(Game*game)
 #define GET_POSITION(game, position_index) ((game)->position_pool + (position_index))
 #define GET_PREVIOUS_LEAF_INDEX(position) (position)->previous_leaf_index
 #define GET_NEXT_LEAF_INDEX(position) (position)->next_leaf_index
-#define GET_FIRST_MOVE_INDEX(position) (position)->get_first_move_index
+#define GET_FIRST_MOVE_INDEX(position) (position)->first_move_index
 #define SET_PREVIOUS_LEAF_INDEX(position, value) ((position)->previous_leaf_index = (value))
 #define SET_NEXT_LEAF_INDEX(position, value) ((position)->next_leaf_index = (value))
 #define SET_FIRST_MOVE_INDEX(position, value) ((position)->first_move_index = (value))
@@ -2645,26 +2645,31 @@ GUIAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x, i
             }
             else
             {
+                Piece current_position_selected_piece =
+                    current_position->pieces[game->selected_piece_index];
                 uint8_t square_index =
                     SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id,
                         game->engine_player_index);
-                uint16_t*piece_first_move_index = game->selected_move_index;
-                do
+                if (current_position_selected_piece.square_index != square_index)
                 {
-                    Position*move = GET_POSITION(game, *game->selected_move_index);
-                    if (move->squares[square_index] == game->selected_piece_index)
+                    uint16_t*piece_first_move_index = game->selected_move_index;
+                    do
                     {
-                        if (current_position->pieces[game->selected_piece_index].piece_type !=
-                            move->pieces[game->selected_piece_index].piece_type)
+                        Position*move = GET_POSITION(game, *game->selected_move_index);
+                        if (move->squares[square_index] == game->selected_piece_index)
                         {
-                            game->is_promoting = true;
-                            return ACTION_REDRAW;
+                            if (current_position_selected_piece.piece_type !=
+                                move->pieces[game->selected_piece_index].piece_type)
+                            {
+                                game->is_promoting = true;
+                                return ACTION_REDRAW;
+                            }
+                            return end_turn(game);
                         }
-                        return end_turn(game);
-                    }
-                    game->selected_move_index = &move->next_move_index;
-                } while (*game->selected_move_index != NULL_POSITION);
-                game->selected_move_index = piece_first_move_index;
+                        game->selected_move_index = &move->next_move_index;
+                    } while (*game->selected_move_index != NULL_POSITION);
+                    game->selected_move_index = piece_first_move_index;
+                }
             }
         }
     }
