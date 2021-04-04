@@ -237,40 +237,37 @@ typedef enum WindowIndex
 #define COLUMNS_PER_ICON 60
 #define PIXELS_PER_ICON COLUMNS_PER_ICON * COLUMNS_PER_ICON
 
-typedef struct Game
-{
-    Position*position_pool;
-    BoardStateNode*state_buckets;
-    uint16_t*selected_move_index;
-    Color icon_bitmaps[2][PIECE_TYPE_COUNT][PIXELS_PER_ICON];
-    Control dialog_controls[sizeof(DialogControlCount)];
-    Control main_window_controls[MAIN_WINDOW_CONTROL_COUNT];
-    Window windows[WINDOW_COUNT];
-    DPIData dpi_datas[WINDOW_COUNT];
-    uint64_t times_left_as_of_last_move[2];
-    uint64_t last_move_time;
-    uint64_t time_increment;
-    uint32_t square_size;
-    uint32_t font_size;
-    uint16_t seconds_left[2];
-    uint16_t current_position_index;
-    uint16_t first_leaf_index;
-    uint16_t next_leaf_to_evaluate_index;
-    uint16_t index_of_first_free_pool_position;
-    uint16_t pool_cursor;
-    uint16_t state_bucket_count;
-    uint16_t external_state_node_count;
-    uint16_t unique_state_count;
-    uint16_t draw_by_50_count;
-    DigitInput time_control[5];
-    DigitInput increment[3];
-    uint8_t state_generation;
-    uint8_t selected_piece_index;
-    uint8_t selected_digit_id;
-    uint8_t engine_player_index;
-    bool run_engine;
-    bool is_promoting;
-} Game;
+Position*g_position_pool;
+BoardStateNode*g_state_buckets;
+uint16_t*g_selected_move_index;
+Color g_icon_bitmaps[2][PIECE_TYPE_COUNT][PIXELS_PER_ICON];
+Control g_dialog_controls[sizeof(DialogControlCount)];
+Control g_main_window_controls[MAIN_WINDOW_CONTROL_COUNT];
+Window g_windows[WINDOW_COUNT];
+DPIData g_dpi_datas[WINDOW_COUNT];
+uint64_t g_times_left_as_of_last_move[2];
+uint64_t g_last_move_time;
+uint64_t g_time_increment;
+uint32_t g_square_size;
+uint32_t g_font_size;
+uint16_t g_seconds_left[2];
+uint16_t g_current_position_index;
+uint16_t g_first_leaf_index;
+uint16_t g_next_leaf_to_evaluate_index;
+uint16_t g_index_of_first_free_pool_position;
+uint16_t g_pool_cursor;
+uint16_t g_state_bucket_count;
+uint16_t g_external_state_node_count;
+uint16_t g_unique_state_count;
+uint16_t g_draw_by_50_count;
+DigitInput g_time_control[5];
+DigitInput g_increment[3];
+uint8_t g_state_generation;
+uint8_t g_selected_piece_index;
+uint8_t g_selected_digit_id;
+uint8_t g_engine_player_index;
+bool g_run_engine;
+bool g_is_promoting;
 
 #define NULL_CONTROL UINT8_MAX
 #define NULL_PIECE 32
@@ -296,10 +293,10 @@ typedef enum Player0PieceIndices
 #ifdef DEBUG
 #define ASSERT(condition) if (!(condition)) *((int*)0) = 0
 
-Position*get_position(Game*game, uint16_t position_index)
+Position*get_position(uint16_t position_index)
 {
     ASSERT(position_index != NULL_POSITION);
-    return game->position_pool + position_index;
+    return g_position_pool + position_index;
 }
 
 uint16_t get_previous_leaf_index(Position*position)
@@ -338,7 +335,7 @@ void set_first_move_index(Position*position, uint16_t value)
     position->first_move_index = value;
 }
 
-#define GET_POSITION(game, position_index) get_position(game, position_index)
+#define GET_POSITION(position_index) get_position(position_index)
 #define GET_PREVIOUS_LEAF_INDEX(position) get_previous_leaf_index(position)
 #define GET_NEXT_LEAF_INDEX(position) get_next_leaf_index(position)
 #define GET_FIRST_MOVE_INDEX(position) get_first_move_index(position)
@@ -346,10 +343,10 @@ void set_first_move_index(Position*position, uint16_t value)
 #define SET_NEXT_LEAF_INDEX(position, value) set_next_leaf_index(position, value)
 #define SET_FIRST_MOVE_INDEX(position, value) set_first_move_index(position, value)
 
-void export_position_tree(Game*game)
+void export_position_tree(void)
 {
     HANDLE file_handle;
-    if (game->position_pool[game->current_position_index].active_player_index == PLAYER_INDEX_WHITE)
+    if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
     {
         file_handle = CreateFileA("white_move_tree", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
     }
@@ -360,28 +357,28 @@ void export_position_tree(Game*game)
     if (file_handle != INVALID_HANDLE_VALUE)
     {
         DWORD bytes_written;
-        WriteFile(file_handle, &game->current_position_index,
-            sizeof(game->current_position_index), &bytes_written, 0);
+        WriteFile(file_handle, &g_current_position_index, sizeof(g_current_position_index),
+            &bytes_written, 0);
         OVERLAPPED overlapped = { 0 };
         overlapped.Offset = 0xffffffff;
         overlapped.OffsetHigh = 0xffffffff;
-        WriteFile(file_handle, game->position_pool, NULL_POSITION * sizeof(Position),
+        WriteFile(file_handle, g_position_pool, NULL_POSITION * sizeof(Position),
             &bytes_written, &overlapped);
         CloseHandle(file_handle);
     }
 }
 
-#define EXPORT_POSITION_TREE(game) export_position_tree(game)
+#define EXPORT_POSITION_TREE() export_position_tree()
 #else
 #define ASSERT(condition)
-#define GET_POSITION(game, position_index) ((game)->position_pool + (position_index))
+#define GET_POSITION(position_index) (g_position_pool + (position_index))
 #define GET_PREVIOUS_LEAF_INDEX(position) (position)->previous_leaf_index
 #define GET_NEXT_LEAF_INDEX(position) (position)->next_leaf_index
 #define GET_FIRST_MOVE_INDEX(position) (position)->first_move_index
 #define SET_PREVIOUS_LEAF_INDEX(position, value) ((position)->previous_leaf_index = (value))
 #define SET_NEXT_LEAF_INDEX(position, value) ((position)->next_leaf_index = (value))
 #define SET_FIRST_MOVE_INDEX(position, value) ((position)->first_move_index = (value))
-#define EXPORT_POSITION_TREE(game)
+#define EXPORT_POSITION_TREE()
 #endif
 
 #define PLAYER_INDEX(piece_index) ((piece_index) >> 4)
@@ -389,9 +386,9 @@ void export_position_tree(Game*game)
 #define FORWARD_DELTA(player_index) (((player_index) << 1) - 1)
 #define RANK(square_index) ((square_index) >> 3)
 #define FILE(square_index) ((square_index) & 0b111)
-#define SCREEN_SQUARE_INDEX(square_index, engine_player_index) ((engine_player_index) == PLAYER_INDEX_WHITE ? (63 - (square_index)) : (square_index))
+#define SCREEN_SQUARE_INDEX(square_index) (g_engine_player_index == PLAYER_INDEX_WHITE ? (63 - (square_index)) : (square_index))
 #define SQUARE_INDEX(rank, file) (FILE_COUNT * (rank) + (file))
-#define EXTERNAL_STATE_NODES(game) ((game)->state_buckets + (game)->state_bucket_count)
+#define EXTERNAL_STATE_NODES() (g_state_buckets + g_state_bucket_count)
 #define PLAYER_PIECES_INDEX(player_index) ((player_index) << 4)
 #define EN_PASSANT_RANK(player_index, forward_delta) KING_RANK(player_index) + ((forward_delta) << 2)
 #define PLAYER_WIN(player_index) (((int16_t[]){INT16_MAX, -INT16_MAX})[player_index])
@@ -400,37 +397,37 @@ size_t g_page_size;
 uint64_t g_counts_per_second;
 uint64_t g_max_time;
 
-void init_board_state_archive(Game*game, uint8_t bucket_count)
+void init_board_state_archive(uint8_t bucket_count)
 {
-    game->state_generation = 0;
-    game->state_bucket_count = bucket_count;
-    game->state_buckets = RESERVE_AND_COMMIT_MEMORY(2 * sizeof(BoardStateNode) * bucket_count);
+    g_state_generation = 0;
+    g_state_bucket_count = bucket_count;
+    g_state_buckets = RESERVE_AND_COMMIT_MEMORY(2 * sizeof(BoardStateNode) * bucket_count);
     for (size_t i = 0; i < bucket_count; ++i)
     {
-        game->state_buckets[i] = (BoardStateNode) { (BoardState) { 0 }, NULL_POSITION, 0, 0 };
+        g_state_buckets[i] = (BoardStateNode) { (BoardState) { 0 }, NULL_POSITION, 0, 0 };
     }
-    game->unique_state_count = 0;
-    game->external_state_node_count = 0;
+    g_unique_state_count = 0;
+    g_external_state_node_count = 0;
 }
 
-bool archive_board_state(Game*game, BoardState*state);
+bool archive_board_state(BoardState*state);
 
-void increment_unique_state_count(Game*game)
+void increment_unique_state_count(void)
 {
-    ++game->unique_state_count;
-    if (game->unique_state_count == game->state_bucket_count)
+    ++g_unique_state_count;
+    if (g_unique_state_count == g_state_bucket_count)
     {
-        BoardStateNode*old_buckets = game->state_buckets;
-        BoardStateNode*old_external_nodes = EXTERNAL_STATE_NODES(game);
-        init_board_state_archive(game, game->state_bucket_count << 1);
-        for (size_t i = 0; i < game->state_bucket_count; ++i)
+        BoardStateNode*old_buckets = g_state_buckets;
+        BoardStateNode*old_external_nodes = EXTERNAL_STATE_NODES();
+        init_board_state_archive(g_state_bucket_count << 1);
+        for (size_t i = 0; i < g_state_bucket_count; ++i)
         {
             BoardStateNode*node = old_buckets + i;
-            if (node->count && node->generation == game->state_generation)
+            if (node->count && node->generation == g_state_generation)
             { 
                 while (true)
                 {
-                    archive_board_state(game, &node->state);
+                    archive_board_state(&node->state);
                     if (node->index_of_next_node < NULL_STATE)
                     {
                         node = old_external_nodes + node->index_of_next_node;
@@ -446,9 +443,9 @@ void increment_unique_state_count(Game*game)
     }
 }
 
-bool archive_board_state(Game*game, BoardState*state)
+bool archive_board_state(BoardState*state)
 {
-    //FNV hash the state into an index less than game->state_bucket_count.
+    //FNV hash the state into an index less than g_state_bucket_count.
     uint32_t bucket_index = 2166136261;
     for (size_t i = 0; i < sizeof(BoardState); ++i)
     {
@@ -456,27 +453,27 @@ bool archive_board_state(Game*game, BoardState*state)
         bucket_index *= 16777619;
     }
     uint32_t bucket_count_bit_count;
-    BIT_SCAN_REVERSE(&bucket_count_bit_count, game->state_bucket_count);
+    BIT_SCAN_REVERSE(&bucket_count_bit_count, g_state_bucket_count);
     bucket_index = ((bucket_index >> bucket_count_bit_count) ^ bucket_index) &
         ((1 << bucket_count_bit_count) - 1);
 
-    BoardStateNode*node = game->state_buckets + bucket_index;
-    if (node->count && node->generation == game->state_generation)
+    BoardStateNode*node = g_state_buckets + bucket_index;
+    if (node->count && node->generation == g_state_generation)
     {
         while (memcmp(state, &node->state, sizeof(BoardState)))
         {
             if (node->index_of_next_node == NULL_STATE)
             {
-                node->index_of_next_node = game->external_state_node_count;
-                EXTERNAL_STATE_NODES(game)[game->external_state_node_count] =
-                (BoardStateNode) { *state, NULL_STATE, 1, game->state_generation };
-                ++game->external_state_node_count;
-                increment_unique_state_count(game);
+                node->index_of_next_node = g_external_state_node_count;
+                EXTERNAL_STATE_NODES()[g_external_state_node_count] =
+                    (BoardStateNode) { *state, NULL_STATE, 1, g_state_generation };
+                ++g_external_state_node_count;
+                increment_unique_state_count();
                 return true;
             }
             else
             {
-                node = EXTERNAL_STATE_NODES(game) + node->index_of_next_node;
+                node = EXTERNAL_STATE_NODES() + node->index_of_next_node;
             }
         }
         ++node->count;
@@ -490,8 +487,8 @@ bool archive_board_state(Game*game, BoardState*state)
         node->state = *state;
         node->index_of_next_node = NULL_STATE;
         node->count = 1;
-        node->generation = game->state_generation;
-        increment_unique_state_count(game);
+        node->generation = g_state_generation;
+        increment_unique_state_count();
     }
     return true;
 }
@@ -690,41 +687,41 @@ void move_piece_to_square(Position*position, uint8_t piece_index, uint8_t square
 
 jmp_buf out_of_memory_jump_buffer;
 
-uint16_t allocate_position(Game*game)
+uint16_t allocate_position(void)
 {
     uint16_t new_position_index;
     Position*new_position;
-    if (game->index_of_first_free_pool_position == NULL_POSITION)
+    if (g_index_of_first_free_pool_position == NULL_POSITION)
     {
-        if (game->pool_cursor == NULL_POSITION)
+        if (g_pool_cursor == NULL_POSITION)
         {
-            game->run_engine = false;
+            g_run_engine = false;
             longjmp(out_of_memory_jump_buffer, 1);
         }
-        new_position_index = game->pool_cursor;
-        new_position = GET_POSITION(game, new_position_index);
+        new_position_index = g_pool_cursor;
+        new_position = GET_POSITION(new_position_index);
         COMMIT_MEMORY(new_position, g_page_size);
-        ++game->pool_cursor;
+        ++g_pool_cursor;
         new_position->is_leaf = true;
     }
     else
     {
-        new_position_index = game->index_of_first_free_pool_position;
-        new_position = GET_POSITION(game, new_position_index);
+        new_position_index = g_index_of_first_free_pool_position;
+        new_position = GET_POSITION(new_position_index);
         new_position->is_leaf = true;
         if (new_position->parent_index == NULL_POSITION)
         {
-            game->index_of_first_free_pool_position = GET_NEXT_LEAF_INDEX(new_position);
+            g_index_of_first_free_pool_position = GET_NEXT_LEAF_INDEX(new_position);
         }
         else if (new_position->next_move_index == NULL_POSITION)
         {
-            GET_POSITION(game, new_position->parent_index)->next_leaf_index =
+            GET_POSITION(new_position->parent_index)->next_leaf_index =
                 GET_NEXT_LEAF_INDEX(new_position);
-            game->index_of_first_free_pool_position = new_position->parent_index;
+            g_index_of_first_free_pool_position = new_position->parent_index;
         }
         else
         {
-            game->index_of_first_free_pool_position = GET_NEXT_LEAF_INDEX(new_position);
+            g_index_of_first_free_pool_position = GET_NEXT_LEAF_INDEX(new_position);
         }
     }
     new_position->en_passant_file = FILE_COUNT;
@@ -733,20 +730,20 @@ uint16_t allocate_position(Game*game)
     return new_position_index;
 }
 
-uint16_t copy_position(Game*game, uint16_t position_index)
+uint16_t copy_position(uint16_t position_index)
 {
-    Position*position = GET_POSITION(game, position_index);
-    uint16_t copy_index = allocate_position(game);
-    Position*copy = GET_POSITION(game, copy_index);
+    Position*position = GET_POSITION(position_index);
+    uint16_t copy_index = allocate_position();
+    Position*copy = GET_POSITION(copy_index);
     memcpy(&copy->squares, &position->squares, sizeof(position->squares));
     memcpy(&copy->pieces, &position->pieces, sizeof(position->pieces));
     return copy_index;
 }
 
-void add_move(Game*game, uint16_t position_index, uint16_t move_index)
+void add_move(uint16_t position_index, uint16_t move_index)
 {
-    Position*position = GET_POSITION(game, position_index);
-    Position*move = GET_POSITION(game, move_index);
+    Position*position = GET_POSITION(position_index);
+    Position*move = GET_POSITION(move_index);
     move->parent_index = position_index;
     if (position->is_leaf)
     {
@@ -754,14 +751,14 @@ void add_move(Game*game, uint16_t position_index, uint16_t move_index)
         SET_NEXT_LEAF_INDEX(move, GET_NEXT_LEAF_INDEX(position));
         if (GET_NEXT_LEAF_INDEX(move) != NULL_POSITION)
         {
-            SET_PREVIOUS_LEAF_INDEX(GET_POSITION(game, GET_NEXT_LEAF_INDEX(move)), move_index);
+            SET_PREVIOUS_LEAF_INDEX(GET_POSITION(GET_NEXT_LEAF_INDEX(move)), move_index);
         }
         position->is_leaf = false;
         move->next_move_index = NULL_POSITION;
     }
     else
     {
-        Position*next_move = GET_POSITION(game, GET_FIRST_MOVE_INDEX(position));
+        Position*next_move = GET_POSITION(GET_FIRST_MOVE_INDEX(position));
         SET_PREVIOUS_LEAF_INDEX(move, GET_PREVIOUS_LEAF_INDEX(next_move));
         SET_NEXT_LEAF_INDEX(move, GET_FIRST_MOVE_INDEX(position));
         SET_PREVIOUS_LEAF_INDEX(next_move, move_index);
@@ -769,156 +766,152 @@ void add_move(Game*game, uint16_t position_index, uint16_t move_index)
     }
     if (GET_PREVIOUS_LEAF_INDEX(move) == NULL_POSITION)
     {
-        game->first_leaf_index = move_index;
+        g_first_leaf_index = move_index;
     }
     else
     {
-        SET_NEXT_LEAF_INDEX(GET_POSITION(game, GET_PREVIOUS_LEAF_INDEX(move)), move_index);
+        SET_NEXT_LEAF_INDEX(GET_POSITION(GET_PREVIOUS_LEAF_INDEX(move)), move_index);
     }
     SET_FIRST_MOVE_INDEX(position, move_index);
     move->active_player_index = !position->active_player_index;
 }
 
-void free_position(Game*game, uint16_t position_index)
+void free_position(uint16_t position_index)
 {
-    Position*position = GET_POSITION(game, position_index);
+    Position*position = GET_POSITION(position_index);
     position->parent_index = NULL_POSITION;
-    position->next_leaf_index = game->index_of_first_free_pool_position;
-    game->index_of_first_free_pool_position = position_index;
+    position->next_leaf_index = g_index_of_first_free_pool_position;
+    g_index_of_first_free_pool_position = position_index;
 }
 
-bool add_move_if_not_king_hang(Game*game, uint16_t position_index, uint16_t move_index)
+bool add_move_if_not_king_hang(uint16_t position_index, uint16_t move_index)
 {
-    Position*move = GET_POSITION(game, move_index);
-    if (player_is_checked(move, GET_POSITION(game, position_index)->active_player_index))
+    Position*move = GET_POSITION(move_index);
+    if (player_is_checked(move, GET_POSITION(position_index)->active_player_index))
     {
-        free_position(game, move_index);
+        free_position(move_index);
         return false;
     }
     else
     {
-        add_move(game, position_index, move_index);
+        add_move(position_index, move_index);
         return true;
     }
 }
 
-Position*move_piece_and_add_as_move(Game*game, uint16_t position_index, uint8_t piece_index,
+Position*move_piece_and_add_as_move(uint16_t position_index, uint8_t piece_index,
     uint8_t destination_square_index)
 {
-    Position*position = GET_POSITION(game, position_index);
+    Position*position = GET_POSITION(position_index);
     uint8_t destination_square = position->squares[destination_square_index];
     if (destination_square == NULL_PIECE)
     {
-        uint16_t move_index = copy_position(game, position_index);
-        Position*move = GET_POSITION(game, move_index);
+        uint16_t move_index = copy_position(position_index);
+        Position*move = GET_POSITION(move_index);
         move_piece_to_square(move, piece_index, destination_square_index);
-        add_move_if_not_king_hang(game, position_index, move_index);
+        add_move_if_not_king_hang(position_index, move_index);
         return move;
     }
     else if (PLAYER_INDEX(destination_square) != position->active_player_index)
     {
-        uint16_t move_index = copy_position(game, position_index);
-        Position*move = GET_POSITION(game, move_index);
+        uint16_t move_index = copy_position(position_index);
+        Position*move = GET_POSITION(move_index);
         capture_piece(move, destination_square);
         move_piece_to_square(move, piece_index, destination_square_index);
-        add_move_if_not_king_hang(game, position_index, move_index);
+        add_move_if_not_king_hang(position_index, move_index);
     }
     return 0;
 }
 
-uint16_t add_position_copy_as_move(Game*game, uint16_t position_index,
-    uint16_t position_to_copy_index)
+uint16_t add_position_copy_as_move(uint16_t position_index, uint16_t position_to_copy_index)
 {
-    uint16_t copy_index = copy_position(game, position_to_copy_index);
-    add_move(game, position_index, copy_index);
+    uint16_t copy_index = copy_position(position_to_copy_index);
+    add_move(position_index, copy_index);
     return copy_index;
 }
 
-void add_forward_pawn_move_with_promotions(Game*game, uint16_t position_index,
-    uint16_t promotion_index, uint8_t piece_index)
+void add_forward_pawn_move_with_promotions(uint16_t position_index, uint16_t promotion_index,
+    uint8_t piece_index)
 {
-    if (add_move_if_not_king_hang(game, position_index, promotion_index))
+    if (add_move_if_not_king_hang(position_index, promotion_index))
     {
-        Position*promotion = GET_POSITION(game, promotion_index);
+        Position*promotion = GET_POSITION(promotion_index);
         if (RANK(promotion->pieces[piece_index].square_index) ==
             KING_RANK(!PLAYER_INDEX(piece_index)))
         {
             promotion->pieces[piece_index].piece_type = PIECE_ROOK;
-            promotion = GET_POSITION(game,
-                add_position_copy_as_move(game, position_index, promotion_index));
+            promotion = GET_POSITION(add_position_copy_as_move(position_index, promotion_index));
             promotion->pieces[piece_index].piece_type = PIECE_KNIGHT;
             promotion->reset_draw_by_50_count = true;
-            promotion = GET_POSITION(game,
-                add_position_copy_as_move(game, position_index, promotion_index));
+            promotion = GET_POSITION(add_position_copy_as_move(position_index, promotion_index));
             promotion->pieces[piece_index].piece_type = PIECE_BISHOP;
             promotion->reset_draw_by_50_count = true;
-            promotion = GET_POSITION(game,
-                add_position_copy_as_move(game, position_index, promotion_index));
+            promotion = GET_POSITION(add_position_copy_as_move(position_index, promotion_index));
             promotion->pieces[piece_index].piece_type = PIECE_QUEEN;
             promotion->reset_draw_by_50_count = true;
         }
     }
 }
 
-void add_diagonal_pawn_move(Game*game, uint16_t position_index, uint8_t piece_index, uint8_t file)
+void add_diagonal_pawn_move(uint16_t position_index, uint8_t piece_index, uint8_t file)
 {
-    Position*position = GET_POSITION(game, position_index);
+    Position*position = GET_POSITION(position_index);
     uint8_t rank = RANK(position->pieces[piece_index].square_index);
     int8_t forward_delta = FORWARD_DELTA(position->active_player_index);
     uint8_t destination_square_index = SQUARE_INDEX(rank + forward_delta, file);
     if (file == position->en_passant_file && rank ==
         EN_PASSANT_RANK(position->active_player_index, forward_delta))
     {
-        uint16_t move_index = copy_position(game, position_index);
-        Position*move = GET_POSITION(game, move_index);
+        uint16_t move_index = copy_position(position_index);
+        Position*move = GET_POSITION(move_index);
         uint8_t en_passant_square_index = SQUARE_INDEX(rank, file);
         capture_piece(move, position->squares[en_passant_square_index]);
         move_piece_to_square(move, piece_index, destination_square_index);
         move->squares[en_passant_square_index] = NULL_PIECE;
-        add_move_if_not_king_hang(game, position_index, move_index);
+        add_move_if_not_king_hang(position_index, move_index);
     }
     else
     {
         uint8_t destination_square = position->squares[destination_square_index];
         if (PLAYER_INDEX(destination_square) == !position->active_player_index)
         {
-            uint16_t move_index = copy_position(game, position_index);
-            Position*move = GET_POSITION(game, move_index);
+            uint16_t move_index = copy_position(position_index);
+            Position*move = GET_POSITION(move_index);
             capture_piece(move, destination_square);
             move_piece_to_square(move, piece_index, destination_square_index);
-            add_forward_pawn_move_with_promotions(game, position_index, move_index, piece_index);
+            add_forward_pawn_move_with_promotions(position_index, move_index, piece_index);
         }
     }
 }
 
-void add_half_diagonal_moves(Game*game, uint16_t position_index, uint8_t piece_index,
-    int8_t rank_delta, int8_t file_delta)
+void add_half_diagonal_moves(uint16_t position_index, uint8_t piece_index, int8_t rank_delta,
+    int8_t file_delta)
 {
     uint8_t destination_square_index =
-        GET_POSITION(game, position_index)->pieces[piece_index].square_index;
+        GET_POSITION(position_index)->pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
     do
     {
         destination_rank += rank_delta;
         destination_file += file_delta;
-    } while (destination_rank < 8 && destination_file < 8 && move_piece_and_add_as_move(game,
+    } while (destination_rank < 8 && destination_file < 8 && move_piece_and_add_as_move(
         position_index, piece_index, SQUARE_INDEX(destination_rank, destination_file)));
 }
 
-void add_diagonal_moves(Game*game, uint16_t position_index, uint8_t piece_index)
+void add_diagonal_moves(uint16_t position_index, uint8_t piece_index)
 {
-    add_half_diagonal_moves(game, position_index, piece_index, 1, 1);
-    add_half_diagonal_moves(game, position_index, piece_index, 1, -1);
-    add_half_diagonal_moves(game, position_index, piece_index, -1, 1);
-    add_half_diagonal_moves(game, position_index, piece_index, -1, -1);
+    add_half_diagonal_moves(position_index, piece_index, 1, 1);
+    add_half_diagonal_moves(position_index, piece_index, 1, -1);
+    add_half_diagonal_moves(position_index, piece_index, -1, 1);
+    add_half_diagonal_moves(position_index, piece_index, -1, -1);
 }
 
-void add_half_horizontal_moves(Game*game, uint16_t position_index, uint8_t piece_index,
-    int8_t delta, bool loses_castling_rights)
+void add_half_horizontal_moves(uint16_t position_index, uint8_t piece_index, int8_t delta,
+    bool loses_castling_rights)
 {
     uint8_t destination_square_index =
-        GET_POSITION(game, position_index)->pieces[piece_index].square_index;
+        GET_POSITION(position_index)->pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
     while (true)
@@ -928,7 +921,7 @@ void add_half_horizontal_moves(Game*game, uint16_t position_index, uint8_t piece
         {
             break;
         }
-        Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+        Position*move = move_piece_and_add_as_move(position_index, piece_index,
             SQUARE_INDEX(destination_rank, destination_file));
         if (move)
         {
@@ -941,11 +934,11 @@ void add_half_horizontal_moves(Game*game, uint16_t position_index, uint8_t piece
     }
 }
 
-void add_half_vertical_moves(Game*game, uint16_t position_index, uint8_t piece_index, int8_t delta,
+void add_half_vertical_moves(uint16_t position_index, uint8_t piece_index, int8_t delta,
     bool loses_castling_rights)
 {
     uint8_t destination_square_index =
-        GET_POSITION(game, position_index)->pieces[piece_index].square_index;
+        GET_POSITION(position_index)->pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
     while (true)
@@ -955,7 +948,7 @@ void add_half_vertical_moves(Game*game, uint16_t position_index, uint8_t piece_i
         {
             break;
         }
-        Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+        Position*move = move_piece_and_add_as_move(position_index, piece_index,
             SQUARE_INDEX(destination_rank, destination_file));
         if (move)
         {
@@ -968,13 +961,12 @@ void add_half_vertical_moves(Game*game, uint16_t position_index, uint8_t piece_i
     }
 }
 
-void add_moves_along_axes(Game*game, uint16_t position_index, uint8_t piece_index,
-    bool loses_castling_rights)
+void add_moves_along_axes(uint16_t position_index, uint8_t piece_index, bool loses_castling_rights)
 {
-    add_half_horizontal_moves(game, position_index, piece_index, 1, loses_castling_rights);
-    add_half_horizontal_moves(game, position_index, piece_index, -1, loses_castling_rights);
-    add_half_vertical_moves(game, position_index, piece_index, 1, loses_castling_rights);
-    add_half_vertical_moves(game, position_index, piece_index, -1, loses_castling_rights);
+    add_half_horizontal_moves(position_index, piece_index, 1, loses_castling_rights);
+    add_half_horizontal_moves(position_index, piece_index, -1, loses_castling_rights);
+    add_half_vertical_moves(position_index, piece_index, 1, loses_castling_rights);
+    add_half_vertical_moves(position_index, piece_index, -1, loses_castling_rights);
 }
 
 size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king_rank_or_file)
@@ -995,15 +987,15 @@ size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king
     return count;
 }
 
-void get_moves(Game*game, uint16_t position_index)
+void get_moves(uint16_t position_index)
 {
-    Position*position = GET_POSITION(game, position_index);
+    Position*position = GET_POSITION(position_index);
     if (setjmp(out_of_memory_jump_buffer))
     {
         if (!position->is_leaf)
         {
             uint16_t move_index = GET_FIRST_MOVE_INDEX(position);
-            Position*move = GET_POSITION(game, move_index);
+            Position*move = GET_POSITION(move_index);
             position->is_leaf = true;
             SET_PREVIOUS_LEAF_INDEX(position, GET_PREVIOUS_LEAF_INDEX(move));
             while (true)
@@ -1011,21 +1003,21 @@ void get_moves(Game*game, uint16_t position_index)
                 if (move->next_move_index == NULL_POSITION)
                 {
                     SET_NEXT_LEAF_INDEX(position, GET_NEXT_LEAF_INDEX(move));
-                    free_position(game, move_index);
+                    free_position(move_index);
                     break;
                 }
-                free_position(game, move_index);
+                free_position(move_index);
                 move_index = move->next_move_index;
-                move = GET_POSITION(game, move_index);
+                move = GET_POSITION(move_index);
             }
             if (GET_PREVIOUS_LEAF_INDEX(position) != NULL_POSITION)
             {
-                SET_NEXT_LEAF_INDEX(GET_POSITION(game, GET_PREVIOUS_LEAF_INDEX(position)),
+                SET_NEXT_LEAF_INDEX(GET_POSITION(GET_PREVIOUS_LEAF_INDEX(position)),
                     position_index);
             }
             if (GET_NEXT_LEAF_INDEX(position) != NULL_POSITION)
             {
-                SET_PREVIOUS_LEAF_INDEX(GET_POSITION(game, GET_NEXT_LEAF_INDEX(position)),
+                SET_PREVIOUS_LEAF_INDEX(GET_POSITION(GET_NEXT_LEAF_INDEX(position)),
                     position_index);
             }
         }
@@ -1048,37 +1040,37 @@ void get_moves(Game*game, uint16_t position_index)
             uint8_t file = FILE(piece.square_index);
             if (file)
             {
-                add_diagonal_pawn_move(game, position_index, piece_index, file - 1);
+                add_diagonal_pawn_move(position_index, piece_index, file - 1);
             }
             if (file < 7)
             {
-                add_diagonal_pawn_move(game, position_index, piece_index, file + 1);
+                add_diagonal_pawn_move(position_index, piece_index, file + 1);
             }
             uint8_t destination_square_index = piece.square_index + forward_delta * FILE_COUNT;
             if (position->squares[destination_square_index] == NULL_PIECE)
             {
-                uint16_t move_index = copy_position(game, position_index);
-                Position*move = GET_POSITION(game, move_index);
+                uint16_t move_index = copy_position(position_index);
+                Position*move = GET_POSITION(move_index);
                 move_piece_to_square(move, piece_index, destination_square_index);
                 move->reset_draw_by_50_count = true;
                 destination_square_index += forward_delta * FILE_COUNT;
-                add_forward_pawn_move_with_promotions(game, position_index, move_index,
+                add_forward_pawn_move_with_promotions(position_index, move_index,
                     piece_index);
                 if (!piece.has_moved && position->squares[destination_square_index] == NULL_PIECE)
                 {
-                    move_index = copy_position(game, position_index);
-                    move = GET_POSITION(game, move_index);
+                    move_index = copy_position(position_index);
+                    move = GET_POSITION(move_index);
                     move_piece_to_square(move, piece_index, destination_square_index);
                     move->reset_draw_by_50_count = true;
                     move->en_passant_file = file;
-                    add_move_if_not_king_hang(game, position_index, move_index);
+                    add_move_if_not_king_hang(position_index, move_index);
                 }
             }
             break;
         }
         case PIECE_BISHOP:
         {
-            add_diagonal_moves(game, position_index, piece_index);
+            add_diagonal_moves(position_index, piece_index);
             break;
         }
         case PIECE_KNIGHT:
@@ -1090,24 +1082,24 @@ void get_moves(Game*game, uint16_t position_index)
             {
                 if (rank > 1)
                 {
-                    move_piece_and_add_as_move(game, position_index, piece_index,
+                    move_piece_and_add_as_move(position_index, piece_index,
                         SQUARE_INDEX(rank - 2, file - 1));
                 }
                 if (rank < 6)
                 {
-                    move_piece_and_add_as_move(game, position_index, piece_index,
+                    move_piece_and_add_as_move(position_index, piece_index,
                         SQUARE_INDEX(rank + 2, file - 1));
                 }
                 if (file > 1)
                 {
                     if (rank > 0)
                     {
-                        move_piece_and_add_as_move(game, position_index, piece_index,
+                        move_piece_and_add_as_move(position_index, piece_index,
                             SQUARE_INDEX(rank - 1, file - 2));
                     }
                     if (rank < 7)
                     {
-                        move_piece_and_add_as_move(game, position_index, piece_index,
+                        move_piece_and_add_as_move(position_index, piece_index,
                             SQUARE_INDEX(rank + 1, file - 2));
                     }
                 }
@@ -1116,24 +1108,24 @@ void get_moves(Game*game, uint16_t position_index)
             {
                 if (rank > 1)
                 {
-                    move_piece_and_add_as_move(game, position_index, piece_index,
+                    move_piece_and_add_as_move(position_index, piece_index,
                         SQUARE_INDEX(rank - 2, file + 1));
                 }
                 if (rank < 6)
                 {
-                    move_piece_and_add_as_move(game, position_index, piece_index,
+                    move_piece_and_add_as_move(position_index, piece_index,
                         SQUARE_INDEX(rank + 2, file + 1));
                 }
                 if (file < 6)
                 {
                     if (rank > 0)
                     {
-                        move_piece_and_add_as_move(game, position_index, piece_index,
+                        move_piece_and_add_as_move(position_index, piece_index,
                             SQUARE_INDEX(rank - 1, file + 2));
                     }
                     if (rank < 7)
                     {
-                        move_piece_and_add_as_move(game, position_index, piece_index, 
+                        move_piece_and_add_as_move(position_index, piece_index,
                             SQUARE_INDEX(rank + 1, file + 2));
                     }
                 }
@@ -1142,14 +1134,14 @@ void get_moves(Game*game, uint16_t position_index)
         }
         case PIECE_ROOK:
         {
-            add_moves_along_axes(game, position_index, piece_index, !piece.has_moved &&
+            add_moves_along_axes(position_index, piece_index, !piece.has_moved &&
                 !position->pieces[(position->active_player_index << 4) + KING_INDEX].has_moved);
             break;
         }
         case PIECE_QUEEN:
         {
-            add_diagonal_moves(game, position_index, piece_index);
-            add_moves_along_axes(game, position_index, piece_index, false);
+            add_diagonal_moves(position_index, piece_index);
+            add_moves_along_axes(position_index, piece_index, false);
             break;
         }
         case PIECE_KING:
@@ -1169,7 +1161,7 @@ void get_moves(Game*game, uint16_t position_index)
             {
                 for (size_t file_index = 0; file_index < move_file_count; ++file_index)
                 {
-                    Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
                         SQUARE_INDEX(move_ranks[rank_index], move_files[file_index]));
                     if (move)
                     {
@@ -1190,7 +1182,7 @@ void get_moves(Game*game, uint16_t position_index)
                     !player_attacks_king_square(position, !position->active_player_index,
                         piece.square_index - 2))
                 {
-                    Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
                         piece.square_index - 2);
                     move->reset_draw_by_50_count = true;
                     move_piece_to_square(move, a_rook_index, piece.square_index - 1);
@@ -1203,7 +1195,7 @@ void get_moves(Game*game, uint16_t position_index)
                     !player_attacks_king_square(position, !position->active_player_index,
                         piece.square_index + 2))
                 {
-                    Position*move = move_piece_and_add_as_move(game, position_index, piece_index,
+                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
                         piece.square_index + 2);
                     move->reset_draw_by_50_count = true;
                     move_piece_to_square(move, h_rook_index, piece.square_index + 1);
@@ -1233,11 +1225,11 @@ void get_moves(Game*game, uint16_t position_index)
         {
             return;
         }
-        position = GET_POSITION(game, position->parent_index);
+        position = GET_POSITION(position->parent_index);
     }
     else
     {
-        Position*move = GET_POSITION(game, GET_FIRST_MOVE_INDEX(position));
+        Position*move = GET_POSITION(GET_FIRST_MOVE_INDEX(position));
         while (true)
         {
             move->evaluation = 0;
@@ -1280,7 +1272,7 @@ void get_moves(Game*game, uint16_t position_index)
             {
                 break;
             }
-            move = GET_POSITION(game, move->next_move_index);
+            move = GET_POSITION(move->next_move_index);
         }
     }
     while (true)
@@ -1289,7 +1281,7 @@ void get_moves(Game*game, uint16_t position_index)
         uint16_t move_index = GET_FIRST_MOVE_INDEX(position);
         while (move_index != NULL_POSITION)
         {
-            Position*move = GET_POSITION(game, move_index);
+            Position*move = GET_POSITION(move_index);
             if (position->active_player_index == PLAYER_INDEX_WHITE)
             {
                 if (move->evaluation > new_evaluation)
@@ -1312,25 +1304,25 @@ void get_moves(Game*game, uint16_t position_index)
         {
             return;
         }
-        position = GET_POSITION(game, position->parent_index);
+        position = GET_POSITION(position->parent_index);
     }
 }
 
-bool make_move_current(Game*game, uint16_t move_index)
+bool make_move_current(uint16_t move_index)
 {
-    game->current_position_index = move_index;
-    Position*position = GET_POSITION(game, game->current_position_index);
+    g_current_position_index = move_index;
+    Position*position = GET_POSITION(g_current_position_index);
     if (position->reset_draw_by_50_count)
     {
-        game->draw_by_50_count = 0;
-        ++game->state_generation;
+        g_draw_by_50_count = 0;
+        ++g_state_generation;
     }
-    ++game->draw_by_50_count;
+    ++g_draw_by_50_count;
     if (!position->moves_have_been_found)
     {
-        get_moves(game, game->current_position_index);
+        get_moves(g_current_position_index);
     }
-    game->next_leaf_to_evaluate_index = game->first_leaf_index;
+    g_next_leaf_to_evaluate_index = g_first_leaf_index;
     BoardState state = { 0 };
     uint64_t square_mask_digit = 1;
     size_t square_hash_index = 0;
@@ -1360,7 +1352,7 @@ bool make_move_current(Game*game, uint16_t move_index)
             square_mask_digit = square_mask_digit << 1;
         }
     }
-    return archive_board_state(game, &state);
+    return archive_board_state(&state);
 }
 
 bool point_is_in_rect(int32_t x, int32_t y, int32_t min_x, int32_t min_y, uint32_t width,
@@ -1518,36 +1510,35 @@ typedef enum UpdateTimerStatus
     UPDATE_TIMER_REDRAW = 0b10
 } UpdateTimerStatus;
 
-UpdateTimerStatus update_timer(Game*game)
+UpdateTimerStatus update_timer(void)
 {
     UpdateTimerStatus out = UPDATE_TIMER_CONTINUE;
-    uint64_t time_since_last_move = get_time() - game->last_move_time;
+    uint64_t time_since_last_move = get_time() - g_last_move_time;
     uint16_t new_seconds_left;
-    uint8_t active_player_index =
-        GET_POSITION(game, game->current_position_index)->active_player_index;
-    if (time_since_last_move >= game->times_left_as_of_last_move[active_player_index])
+    uint8_t active_player_index = GET_POSITION(g_current_position_index)->active_player_index;
+    if (time_since_last_move >= g_times_left_as_of_last_move[active_player_index])
     {
         new_seconds_left = 0;
         out |= UPDATE_TIMER_TIME_OUT;
     }
     else
     {
-        new_seconds_left = (game->times_left_as_of_last_move[active_player_index] -
+        new_seconds_left = (g_times_left_as_of_last_move[active_player_index] -
             time_since_last_move) / g_counts_per_second;
     }
-    if (new_seconds_left != game->seconds_left[active_player_index])
+    if (new_seconds_left != g_seconds_left[active_player_index])
     {
-        game->seconds_left[active_player_index] = new_seconds_left;
+        g_seconds_left[active_player_index] = new_seconds_left;
         out |= UPDATE_TIMER_REDRAW;
     }
     return out;
 }
 
-uint16_t get_first_tree_leaf_index(Game*game, uint16_t root_position_index)
+uint16_t get_first_tree_leaf_index(uint16_t root_position_index)
 {
     while (true)
     {
-        Position*position = GET_POSITION(game, root_position_index);
+        Position*position = GET_POSITION(root_position_index);
         if (position->is_leaf)
         {
             return root_position_index;
@@ -1556,9 +1547,9 @@ uint16_t get_first_tree_leaf_index(Game*game, uint16_t root_position_index)
     }
 }
 
-uint16_t get_last_tree_leaf_index(Game*game, uint16_t root_position_index)
+uint16_t get_last_tree_leaf_index(uint16_t root_position_index)
 {
-    Position*position = GET_POSITION(game, root_position_index);
+    Position*position = GET_POSITION(root_position_index);
     if (position->is_leaf)
     {
         return root_position_index;
@@ -1566,7 +1557,7 @@ uint16_t get_last_tree_leaf_index(Game*game, uint16_t root_position_index)
     uint16_t out = GET_FIRST_MOVE_INDEX(position);
     while (true)
     {
-        position = GET_POSITION(game, out);
+        position = GET_POSITION(out);
         if (position->next_move_index == NULL_POSITION)
         {
             if (position->is_leaf)
@@ -1597,67 +1588,64 @@ typedef enum GUIAction
     ACTION_STALEMATE
 } GUIAction;
 
-GUIAction end_turn(Game*game)
+GUIAction end_turn(void)
 {
     uint64_t move_time = get_time();
-    uint64_t time_since_last_move = move_time - game->last_move_time;
-    uint8_t active_player_index =
-        GET_POSITION(game, game->current_position_index)->active_player_index;
-    uint64_t*time_left_as_of_last_move = game->times_left_as_of_last_move + active_player_index;
+    uint64_t time_since_last_move = move_time - g_last_move_time;
+    uint8_t active_player_index = GET_POSITION(g_current_position_index)->active_player_index;
+    uint64_t*time_left_as_of_last_move = g_times_left_as_of_last_move + active_player_index;
     if (time_since_last_move >= *time_left_as_of_last_move)
     {
-        game->seconds_left[active_player_index] = 0;
+        g_seconds_left[active_player_index] = 0;
         return ACTION_FLAG;
     }
     *time_left_as_of_last_move -= time_since_last_move;
-    if (g_max_time - game->time_increment >= *time_left_as_of_last_move)
+    if (g_max_time - g_time_increment >= *time_left_as_of_last_move)
     {
-        *time_left_as_of_last_move += game->time_increment;
+        *time_left_as_of_last_move += g_time_increment;
     }
     else
     {
         *time_left_as_of_last_move = g_max_time;
     }
-    game->seconds_left[active_player_index] = *time_left_as_of_last_move / g_counts_per_second;
-    game->last_move_time = move_time;
-    EXPORT_POSITION_TREE(game);
-    game->selected_piece_index = NULL_PIECE;
-    uint16_t selected_move_index = *game->selected_move_index;
-    Position*move = GET_POSITION(game, selected_move_index);
-    *game->selected_move_index = move->next_move_index;
+    g_seconds_left[active_player_index] = *time_left_as_of_last_move / g_counts_per_second;
+    g_last_move_time = move_time;
+    EXPORT_POSITION_TREE();
+    g_selected_piece_index = NULL_PIECE;
+    uint16_t selected_move_index = *g_selected_move_index;
+    Position*move = GET_POSITION(selected_move_index);
+    *g_selected_move_index = move->next_move_index;
     move->parent_index = NULL_POSITION;
-    Position*current_position = GET_POSITION(game, game->current_position_index);
+    Position*current_position = GET_POSITION(g_current_position_index);
     if (GET_FIRST_MOVE_INDEX(current_position) == NULL_POSITION)
     {
-        free_position(game, game->current_position_index);
+        free_position(g_current_position_index);
     }
     else
     {
-        uint16_t first_leaf_index = get_first_tree_leaf_index(game, selected_move_index);
-        Position*move_tree_first_leaf = GET_POSITION(game, first_leaf_index);
-        Position*move_tree_last_leaf =
-            GET_POSITION(game, get_last_tree_leaf_index(game, selected_move_index));
+        uint16_t first_leaf_index = get_first_tree_leaf_index(selected_move_index);
+        Position*move_tree_first_leaf = GET_POSITION(first_leaf_index);
+        Position*move_tree_last_leaf = GET_POSITION(get_last_tree_leaf_index(selected_move_index));
         if (GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf) != NULL_POSITION)
         {
-            SET_NEXT_LEAF_INDEX(GET_POSITION(game, GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf)),
+            SET_NEXT_LEAF_INDEX(GET_POSITION(GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf)),
                 GET_NEXT_LEAF_INDEX(move_tree_last_leaf));
         }
         if (GET_NEXT_LEAF_INDEX(move_tree_last_leaf) != NULL_POSITION)
         {
-            SET_PREVIOUS_LEAF_INDEX(GET_POSITION(game, GET_NEXT_LEAF_INDEX(move_tree_last_leaf)),
+            SET_PREVIOUS_LEAF_INDEX(GET_POSITION(GET_NEXT_LEAF_INDEX(move_tree_last_leaf)),
                 GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf));
             SET_NEXT_LEAF_INDEX(move_tree_last_leaf, NULL_POSITION);
         }
         SET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf, NULL_POSITION);
-        game->first_leaf_index = first_leaf_index;
-        first_leaf_index = get_first_tree_leaf_index(game, game->current_position_index);
-        SET_PREVIOUS_LEAF_INDEX(GET_POSITION(game, first_leaf_index), NULL_POSITION);
-        SET_NEXT_LEAF_INDEX(GET_POSITION(game,
-            get_last_tree_leaf_index(game, game->current_position_index)),
-            game->index_of_first_free_pool_position);
-        game->index_of_first_free_pool_position = first_leaf_index;
+        g_first_leaf_index = first_leaf_index;
+        first_leaf_index = get_first_tree_leaf_index(g_current_position_index);
+        SET_PREVIOUS_LEAF_INDEX(GET_POSITION(first_leaf_index), NULL_POSITION);
+        SET_NEXT_LEAF_INDEX(GET_POSITION(get_last_tree_leaf_index(g_current_position_index)),
+            g_index_of_first_free_pool_position);
+        g_index_of_first_free_pool_position = first_leaf_index;
     }
-    if (make_move_current(game, selected_move_index))
+    if (make_move_current(selected_move_index))
     {
         if (move->is_leaf)
         {
@@ -1672,7 +1660,7 @@ GUIAction end_turn(Game*game)
         }
         else
         {
-            game->run_engine = true;
+            g_run_engine = true;
             return ACTION_REDRAW;
         }
     }
@@ -1682,62 +1670,62 @@ GUIAction end_turn(Game*game)
     }
 }
 
-GUIAction do_engine_iteration(Game*game)
+GUIAction do_engine_iteration(void)
 {
-    if (game->run_engine)
+    if (g_run_engine)
     {
-        uint16_t first_leaf_checked_index = game->next_leaf_to_evaluate_index;
-        uint16_t position_to_evaluate_index = game->next_leaf_to_evaluate_index;
+        uint16_t first_leaf_checked_index = g_next_leaf_to_evaluate_index;
+        uint16_t position_to_evaluate_index = g_next_leaf_to_evaluate_index;
         Position*position;
         while (true)
         {
             if (position_to_evaluate_index == NULL_POSITION)
             {
-                position_to_evaluate_index = game->first_leaf_index;
+                position_to_evaluate_index = g_first_leaf_index;
             }
-            position = GET_POSITION(game, position_to_evaluate_index);
+            position = GET_POSITION(position_to_evaluate_index);
             if (!position->moves_have_been_found)
             {
-                game->next_leaf_to_evaluate_index = GET_NEXT_LEAF_INDEX(position);
-                get_moves(game, position_to_evaluate_index);
+                g_next_leaf_to_evaluate_index = GET_NEXT_LEAF_INDEX(position);
+                get_moves(position_to_evaluate_index);
                 break;
             }
             if (first_leaf_checked_index == GET_NEXT_LEAF_INDEX(position))
             {
-                game->run_engine = false;
+                g_run_engine = false;
                 break;
             }
             position_to_evaluate_index = GET_NEXT_LEAF_INDEX(position);
         }
     }
-    if (!game->run_engine)
+    if (!g_run_engine)
     {
-        Position*current_position = GET_POSITION(game, game->current_position_index);
+        Position*current_position = GET_POSITION(g_current_position_index);
         ASSERT(!current_position->is_leaf);
-        if (current_position->active_player_index == game->engine_player_index)
+        if (current_position->active_player_index == g_engine_player_index)
         {
-            int64_t best_evaluation = PLAYER_WIN(!game->engine_player_index);
+            int64_t best_evaluation = PLAYER_WIN(!g_engine_player_index);
             uint16_t*move_index = &current_position->first_move_index;
-            game->selected_move_index = move_index;
+            g_selected_move_index = move_index;
             while (*move_index != NULL_POSITION)
             {
-                Position*move = GET_POSITION(game, *move_index);
-                if (game->engine_player_index == PLAYER_INDEX_WHITE)
+                Position*move = GET_POSITION(*move_index);
+                if (g_engine_player_index == PLAYER_INDEX_WHITE)
                 {
                     if (move->evaluation > best_evaluation)
                     {
                         best_evaluation = move->evaluation;
-                        game->selected_move_index = move_index;
+                        g_selected_move_index = move_index;
                     }
                 }
                 else if (move->evaluation < best_evaluation)
                 {
                     best_evaluation = move->evaluation;
-                    game->selected_move_index = move_index;
+                    g_selected_move_index = move_index;
                 }
                 move_index = &move->next_move_index;
             }
-            return end_turn(game);
+            return end_turn();
         }
     }
     return ACTION_NONE;
@@ -1863,11 +1851,11 @@ void fill_circle_row_pair(uint8_t*center, int32_t diameter, int32_t max_x, int32
     fill_circle_row_pair_interiors(center, diameter, max_x, lower_row_y);
 }
 
-void set_dpi_data(Game*game, Window*window, uint32_t font_size, uint16_t dpi)
+void set_dpi_data(Window*window, uint16_t dpi)
 {
-    for (size_t i = 0; i < ARRAY_COUNT(game->dpi_datas); ++i)
+    for (size_t i = 0; i < ARRAY_COUNT(g_dpi_datas); ++i)
     {
-        DPIData*dpi_data = game->dpi_datas + i;
+        DPIData*dpi_data = g_dpi_datas + i;
         if (dpi_data->reference_count)
         {
             if (dpi_data->dpi == dpi)
@@ -1882,9 +1870,10 @@ void set_dpi_data(Game*game, Window*window, uint32_t font_size, uint16_t dpi)
             window->dpi_data = dpi_data;
         }
     }
+    g_square_size = COLUMNS_PER_ICON;
     ++window->dpi_data->reference_count;
     window->dpi_data->dpi = dpi;
-    FT_Set_Char_Size(g_face, 0, font_size, 0, dpi);
+    FT_Set_Char_Size(g_face, 0, g_font_size, 0, dpi);
     FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, '|'), FT_LOAD_DEFAULT);
     window->dpi_data->control_border_thickness = g_face->glyph->bitmap.pitch;
     size_t rasterization_memory_size = 0;
@@ -2089,8 +2078,7 @@ Color tint_color(Color color, Color tint)
         .blue = (color.blue * tint.blue) / 255, .alpha = 255 };
 }
 
-void color_square_with_index(Window*window, Board*board, Color tint, uint32_t square_size,
-    uint8_t square_index)
+void color_square_with_index(Window*window, Board*board, Color tint, uint8_t square_index)
 {
     if (square_index < RANK_COUNT * FILE_COUNT)
     {
@@ -2105,8 +2093,8 @@ void color_square_with_index(Window*window, Board*board, Color tint, uint32_t sq
         {
             color = tint;
         }
-        draw_rectangle(window, board->min_x + square_size * file, board->min_y + square_size * rank,
-            square_size, square_size, color);
+        draw_rectangle(window, board->min_x + g_square_size * file,
+            board->min_y + g_square_size * rank, g_square_size, g_square_size, color);
     }
 }
 
@@ -2149,7 +2137,7 @@ void clear_window(Window*window)
     }
 }
 
-void draw_controls(Game*game, Window*window)
+void draw_controls(Window*window)
 {
     clear_window(window);
     for (size_t control_index = 0; control_index < window->control_count; ++control_index)
@@ -2196,7 +2184,7 @@ void draw_controls(Game*game, Window*window)
                 }
                 draw_circle(window, window->dpi_data->circle_rasterizations + 1,
                     white_circle_center_x, circle_center_y, color);
-                if (option_index != game->engine_player_index)
+                if (option_index != g_engine_player_index)
                 {
                     draw_circle(window, window->dpi_data->circle_rasterizations,
                         control->radio.min_x + window->dpi_data->circle_rasterizations[2].radius -
@@ -2215,9 +2203,9 @@ void draw_controls(Game*game, Window*window)
             size_t clicked_digit_index = window->clicked_control_id - control->base_id;
             size_t hovered_digit_index = window->hovered_control_id - control->base_id;
             uint8_t selected_digit_index;
-            if (game->selected_digit_id >= control->base_id)
+            if (g_selected_digit_id >= control->base_id)
             {
-                selected_digit_index = game->selected_digit_id - control->base_id;
+                selected_digit_index = g_selected_digit_id - control->base_id;
             }
             else
             {
@@ -2314,8 +2302,7 @@ void set_control_ids(Window*window)
     }
 }
 
-bool setup_window_handle_left_mouse_button_up(Game*game, Window*window, int32_t cursor_x,
-    int32_t cursor_y)
+bool setup_window_handle_left_mouse_button_up(Window*window, int32_t cursor_x, int32_t cursor_y)
 {
     if (window->clicked_control_id != NULL_CONTROL)
     {
@@ -2331,12 +2318,11 @@ bool setup_window_handle_left_mouse_button_up(Game*game, Window*window, int32_t 
                 id < window->controls[SETUP_WINDOW_PLAYER_COLOR].base_id +
                     ARRAY_COUNT(g_radio_labels))
             {
-                game->engine_player_index =
-                    !(id - window->controls[SETUP_WINDOW_PLAYER_COLOR].base_id);
+                g_engine_player_index = !(id - window->controls[SETUP_WINDOW_PLAYER_COLOR].base_id);
             }
             else
             {
-                game->selected_digit_id = id;
+                g_selected_digit_id = id;
             }
             return false;
         }
@@ -2345,26 +2331,26 @@ bool setup_window_handle_left_mouse_button_up(Game*game, Window*window, int32_t 
             window->clicked_control_id = NULL_CONTROL;
         }
     }
-    game->selected_digit_id = NULL_CONTROL;
+    g_selected_digit_id = NULL_CONTROL;
     return false;
 }
 
-bool handle_time_input_key_down(Game*game, Control*time_input, KeyId key)
+bool handle_time_input_key_down(Control*time_input, KeyId key)
 {
-    if (game->selected_digit_id >= time_input->base_id &&
-        game->selected_digit_id < time_input->base_id + time_input->time_input.digit_count)
+    if (g_selected_digit_id >= time_input->base_id &&
+        g_selected_digit_id < time_input->base_id + time_input->time_input.digit_count)
     {
-        size_t digit_index = game->selected_digit_id - time_input->base_id;
+        size_t digit_index = g_selected_digit_id - time_input->base_id;
         if (key >= KEY_0 && key < KEY_0 + 10)
         {
             time_input->time_input.digits[digit_index].digit = key - KEY_0;
             if (digit_index + 1 < time_input->time_input.digit_count)
             {
-                ++game->selected_digit_id;
+                ++g_selected_digit_id;
             }
             else
             {
-                game->selected_digit_id = NULL_CONTROL;
+                g_selected_digit_id = NULL_CONTROL;
             }
             return true;
         }
@@ -2375,7 +2361,7 @@ bool handle_time_input_key_down(Game*game, Control*time_input, KeyId key)
             time_input->time_input.digits[digit_index].digit = 0;
             if (digit_index)
             {
-                --game->selected_digit_id;
+                --g_selected_digit_id;
             }
             return true;
         }
@@ -2388,7 +2374,7 @@ bool handle_time_input_key_down(Game*game, Control*time_input, KeyId key)
         {
             if (digit_index)
             {
-                --game->selected_digit_id;
+                --g_selected_digit_id;
             }
             return true;
         }
@@ -2396,7 +2382,7 @@ bool handle_time_input_key_down(Game*game, Control*time_input, KeyId key)
         {
             if (digit_index + 1 < time_input->time_input.digit_count)
             {
-                ++game->selected_digit_id;
+                ++g_selected_digit_id;
             }
             return true;
         }
@@ -2405,23 +2391,23 @@ bool handle_time_input_key_down(Game*game, Control*time_input, KeyId key)
     return false;
 }
 
-bool setup_window_handle_key_down(Game*game, Window*window, uint8_t digit)
+bool setup_window_handle_key_down(Window*window, uint8_t digit)
 {
-    if (handle_time_input_key_down(game, window->controls + SETUP_WINDOW_TIME, digit))
+    if (handle_time_input_key_down(window->controls + SETUP_WINDOW_TIME, digit))
     {
         return true;
     }
-    else if (handle_time_input_key_down(game, window->controls + SETUP_WINDOW_INCREMENT, digit))
+    else if (handle_time_input_key_down(window->controls + SETUP_WINDOW_INCREMENT, digit))
     {
         return true;
     }
     return false;
 }
 
-void set_setup_window_dpi(Game*game, uint16_t dpi)
+void set_setup_window_dpi(uint16_t dpi)
 {
-    Window*setup_window = game->windows + WINDOW_SETUP;
-    set_dpi_data(game, setup_window, game->font_size, dpi);
+    Window*setup_window = g_windows + WINDOW_SETUP;
+    set_dpi_data(setup_window, dpi);
     RadioButtons*player_color = &setup_window->controls[SETUP_WINDOW_PLAYER_COLOR].radio;
     player_color->min_x = setup_window->dpi_data->text_control_height;
     TimeInput*time = &setup_window->controls[SETUP_WINDOW_TIME].time_input;
@@ -2455,39 +2441,39 @@ void set_setup_window_dpi(Game*game, uint16_t dpi)
         2 * setup_window->dpi_data->text_control_height;
 }
 
-void init_setup_window(Game*game, uint16_t dpi)
+void init_setup_window(uint16_t dpi)
 {
-    Window*setup_window = game->windows + WINDOW_SETUP;
+    Window*setup_window = g_windows + WINDOW_SETUP;
     setup_window->control_count = SETUP_WINDOW_CONTROL_COUNT;
     Control*control = setup_window->controls + SETUP_WINDOW_PLAYER_COLOR;
     control->control_type = CONTROL_RADIO;
-    game->engine_player_index = PLAYER_INDEX_BLACK;
+    g_engine_player_index = PLAYER_INDEX_BLACK;
     control = setup_window->controls + SETUP_WINDOW_TIME;
     control->control_type = CONTROL_TIME_INPUT;
     control->time_input.label = "Time:";
-    control->time_input.digits = game->time_control;
-    control->time_input.digit_count = ARRAY_COUNT(game->time_control);
+    control->time_input.digits = g_time_control;
+    control->time_input.digit_count = ARRAY_COUNT(g_time_control);
     control = setup_window->controls + SETUP_WINDOW_INCREMENT;
     control->control_type = CONTROL_TIME_INPUT;
     control->time_input.label = "Increment:";
-    control->time_input.digits = game->increment;
-    control->time_input.digit_count = ARRAY_COUNT(game->increment);
+    control->time_input.digits = g_increment;
+    control->time_input.digit_count = ARRAY_COUNT(g_increment);
     control = setup_window->controls + SETUP_WINDOW_START_GAME;
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Start";
     set_control_ids(setup_window);
-    set_setup_window_dpi(game, dpi);
+    set_setup_window_dpi(dpi);
     setup_window->pixels = 0;
     setup_window->pixel_buffer_capacity = 0;
     setup_window->hovered_control_id = NULL_CONTROL;
     setup_window->clicked_control_id = NULL_CONTROL;
-    game->selected_digit_id = NULL_CONTROL;
+    g_selected_digit_id = NULL_CONTROL;
 }
 
-void set_start_window_dpi(Game*game, char*text, uint16_t dpi)
+void set_start_window_dpi(char*text, uint16_t dpi)
 {
-    Window*start_window = game->windows + WINDOW_START;
-    set_dpi_data(game, start_window, game->font_size, dpi);
+    Window*start_window = g_windows + WINDOW_START;
+    set_dpi_data(start_window, dpi);
     uint32_t button_padding = 2 * start_window->dpi_data->text_control_padding;
     int32_t button_min_x = start_window->dpi_data->text_control_height +
         start_window->dpi_data->control_border_thickness;
@@ -2517,9 +2503,9 @@ void set_start_window_dpi(Game*game, char*text, uint16_t dpi)
         start_window->dpi_data->control_border_thickness + start_window->dpi_data->text_control_height;
 }
 
-void init_start_window(Game*game, char*text, uint16_t dpi)
+void init_start_window(char*text, uint16_t dpi)
 {
-    Window*start_window = game->windows + WINDOW_START;
+    Window*start_window = g_windows + WINDOW_START;
     start_window->control_count = START_CONTROL_COUNT;
     Control*button = start_window->controls + START_NEW_GAME;
     button->control_type = CONTROL_BUTTON;
@@ -2531,30 +2517,30 @@ void init_start_window(Game*game, char*text, uint16_t dpi)
     button->control_type = CONTROL_BUTTON;
     button->button.label = "Quit";
     set_control_ids(start_window);
-    set_start_window_dpi(game, text, dpi);
+    set_start_window_dpi(text, dpi);
     start_window->hovered_control_id = NULL_CONTROL;
     start_window->clicked_control_id = NULL_CONTROL;
     start_window->pixels = 0;
     start_window->pixel_buffer_capacity = 0;
 }
 
-void draw_start_window(Game*game, char*text)
+void draw_start_window(char*text)
 {
-    Window*start_window = game->windows + WINDOW_START;
-    draw_controls(game, start_window);
+    Window*start_window = g_windows + WINDOW_START;
+    draw_controls(start_window);
     draw_string(start_window, text, start_window->dpi_data->text_control_height,
         2 * start_window->dpi_data->text_line_height, g_black);
 }
 
-#define DRAW_BY_50_CAN_BE_CLAIMED(game) (game->draw_by_50_count > 100)
+#define DRAW_BY_50_CAN_BE_CLAIMED() (g_draw_by_50_count > 100)
 
-bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int32_t cursor_y)
+bool main_window_handle_left_mouse_button_down(int32_t cursor_x, int32_t cursor_y)
 {
-    Window*main_window = game->windows + WINDOW_MAIN;
+    Window*main_window = g_windows + WINDOW_MAIN;
     main_window->clicked_control_id = main_window->hovered_control_id;
     if (main_window->hovered_control_id == main_window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id)
     {
-        if (!DRAW_BY_50_CAN_BE_CLAIMED(game))
+        if (!DRAW_BY_50_CAN_BE_CLAIMED())
         {
             main_window->clicked_control_id = NULL_CONTROL;
         }
@@ -2564,8 +2550,8 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
         uint8_t board_base_id = main_window->controls[MAIN_WINDOW_BOARD].base_id;
         if (main_window->hovered_control_id >= board_base_id &&
             main_window->hovered_control_id < board_base_id + 64 &&
-            (GET_POSITION(game, game->current_position_index)->active_player_index ==
-                game->engine_player_index || game->is_promoting))
+            (GET_POSITION(g_current_position_index)->active_player_index == g_engine_player_index ||
+                g_is_promoting))
         {
             main_window->clicked_control_id = NULL_CONTROL;
         }
@@ -2575,7 +2561,7 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
                 main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
             if (main_window->hovered_control_id >= promotion_selector_base_id &&
                 main_window->hovered_control_id < promotion_selector_base_id +
-                ARRAY_COUNT(g_promotion_options) && !game->is_promoting)
+                ARRAY_COUNT(g_promotion_options) && !g_is_promoting)
             {
                 main_window->clicked_control_id = NULL_CONTROL;
             }
@@ -2584,9 +2570,9 @@ bool main_window_handle_left_mouse_button_down(Game*game, int32_t cursor_x, int3
     return main_window->clicked_control_id != NULL_CONTROL;
 }
 
-GUIAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x, int32_t cursor_y)
+GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t cursor_y)
 {
-    Window*main_window = game->windows + WINDOW_MAIN;
+    Window*main_window = g_windows + WINDOW_MAIN;
     if (main_window->clicked_control_id == NULL_CONTROL)
     {
         return ACTION_NONE;
@@ -2603,25 +2589,24 @@ GUIAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x, i
         {
             return ACTION_CLAIM_DRAW;
         }
-        Position*current_position = GET_POSITION(game, game->current_position_index);
-        if (game->selected_piece_index == NULL_PIECE)
+        Position*current_position = GET_POSITION(g_current_position_index);
+        if (g_selected_piece_index == NULL_PIECE)
         {
             uint8_t square_index =
-                SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id,
-                    game->engine_player_index);
+                SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id);
             uint8_t selected_piece_index = current_position->squares[square_index];
             if (PLAYER_INDEX(selected_piece_index) == current_position->active_player_index)
             {
-                game->selected_move_index = &current_position->first_move_index;
-                while (*game->selected_move_index != NULL_POSITION)
+                g_selected_move_index = &current_position->first_move_index;
+                while (*g_selected_move_index != NULL_POSITION)
                 {
-                    Position*move = GET_POSITION(game, *game->selected_move_index);
+                    Position*move = GET_POSITION(*g_selected_move_index);
                     if (move->squares[square_index] != selected_piece_index)
                     {
-                        game->selected_piece_index = selected_piece_index;
+                        g_selected_piece_index = selected_piece_index;
                         return ACTION_REDRAW;
                     }
-                    game->selected_move_index = &move->next_move_index;
+                    g_selected_move_index = &move->next_move_index;
                 }
             }
         }
@@ -2634,41 +2619,40 @@ GUIAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x, i
             {
                 PieceType selected_piece_type =
                     g_promotion_options[id - promotion_selector_base_id];
-                Position*move = GET_POSITION(game, *game->selected_move_index);
-                while (move->pieces[game->selected_piece_index].piece_type != selected_piece_type)
+                Position*move = GET_POSITION(*g_selected_move_index);
+                while (move->pieces[g_selected_piece_index].piece_type != selected_piece_type)
                 {
-                    game->selected_move_index = &move->next_move_index;
-                    move = GET_POSITION(game, move->next_move_index);
+                    g_selected_move_index = &move->next_move_index;
+                    move = GET_POSITION(move->next_move_index);
                 }
-                end_turn(game);
-                game->is_promoting = false;
+                end_turn();
+                g_is_promoting = false;
             }
             else
             {
                 Piece current_position_selected_piece =
-                    current_position->pieces[game->selected_piece_index];
+                    current_position->pieces[g_selected_piece_index];
                 uint8_t square_index =
-                    SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id,
-                        game->engine_player_index);
+                    SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id);
                 if (current_position_selected_piece.square_index != square_index)
                 {
-                    uint16_t*piece_first_move_index = game->selected_move_index;
+                    uint16_t*piece_first_move_index = g_selected_move_index;
                     do
                     {
-                        Position*move = GET_POSITION(game, *game->selected_move_index);
-                        if (move->squares[square_index] == game->selected_piece_index)
+                        Position*move = GET_POSITION(*g_selected_move_index);
+                        if (move->squares[square_index] == g_selected_piece_index)
                         {
                             if (current_position_selected_piece.piece_type !=
-                                move->pieces[game->selected_piece_index].piece_type)
+                                move->pieces[g_selected_piece_index].piece_type)
                             {
-                                game->is_promoting = true;
+                                g_is_promoting = true;
                                 return ACTION_REDRAW;
                             }
-                            return end_turn(game);
+                            return end_turn();
                         }
-                        game->selected_move_index = &move->next_move_index;
-                    } while (*game->selected_move_index != NULL_POSITION);
-                    game->selected_move_index = piece_first_move_index;
+                        g_selected_move_index = &move->next_move_index;
+                    } while (*g_selected_move_index != NULL_POSITION);
+                    g_selected_move_index = piece_first_move_index;
                 }
             }
         }
@@ -2677,20 +2661,20 @@ GUIAction main_window_handle_left_mouse_button_up(Game*game, int32_t cursor_x, i
     return ACTION_REDRAW;
 }
 
-void set_main_window_dpi(Game*game, uint16_t dpi)
+void set_main_window_dpi(uint16_t dpi)
 {
-    Window*main_window = game->windows + WINDOW_MAIN;
-    set_dpi_data(game, main_window, game->font_size, dpi);
+    Window*main_window = g_windows + WINDOW_MAIN;
+    set_dpi_data(main_window, dpi);
     Board*board = &main_window->controls[MAIN_WINDOW_BOARD].board;
-    board->min_x = game->square_size + main_window->dpi_data->control_border_thickness;
+    board->min_x = g_square_size + main_window->dpi_data->control_border_thickness;
     board->min_y = board->min_x;
     main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].promotion_selector.min_x =
         board->min_x + 2 * COLUMNS_PER_ICON;
     Button*save_button = &main_window->controls[MAIN_WINDOW_SAVE_GAME].button;
-    save_button->min_x = board->min_x + 8 * game->square_size +
+    save_button->min_x = board->min_x + 8 * g_square_size +
         main_window->dpi_data->text_control_height +
         2 * main_window->dpi_data->control_border_thickness;
-    save_button->min_y = board->min_y + 4 * game->square_size -
+    save_button->min_y = board->min_y + 4 * g_square_size -
         (main_window->dpi_data->text_control_height +
             main_window->dpi_data->control_border_thickness / 2);
     Button*claim_draw_button = &main_window->controls[MAIN_WINDOW_CLAIM_DRAW].button;
@@ -2705,15 +2689,14 @@ void set_main_window_dpi(Game*game, uint16_t dpi)
         main_window->dpi_data->text_control_height +
         main_window->dpi_data->control_border_thickness;
     main_window->height =
-        board->min_y + 9 * game->square_size + main_window->dpi_data->control_border_thickness;
+        board->min_y + 9 * g_square_size + main_window->dpi_data->control_border_thickness;
 }
 
-void init_main_window(Game*game, uint16_t dpi)
+void init_main_window(uint16_t dpi)
 {
-    Window*main_window = game->windows + WINDOW_MAIN;
-    game->square_size = COLUMNS_PER_ICON;
+    Window*main_window = g_windows + WINDOW_MAIN;
     main_window->control_count = MAIN_WINDOW_CONTROL_COUNT;
-    main_window->controls = game->main_window_controls;
+    main_window->controls = g_main_window_controls;
     Control*control = main_window->controls + MAIN_WINDOW_BOARD;
     control->control_type = CONTROL_BOARD;
     control = main_window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
@@ -2725,18 +2708,18 @@ void init_main_window(Game*game, uint16_t dpi)
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Claim draw";
     set_control_ids(main_window);
-    set_main_window_dpi(game, dpi);
+    set_main_window_dpi(dpi);
     main_window->pixels = 0;
     main_window->pixel_buffer_capacity = 0;
     main_window->hovered_control_id = NULL_CONTROL;
     main_window->clicked_control_id = NULL_CONTROL;
 }
 
-void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_origin_y,
-    uint8_t player_index, bool draw_captured_pieces)
+void draw_player(int32_t captured_pieces_min_y, int32_t timer_text_origin_y, uint8_t player_index,
+    bool draw_captured_pieces)
 {
-    Position*current_position = GET_POSITION(game, game->current_position_index);
-    Window*main_window = game->windows + WINDOW_MAIN;
+    Position*current_position = GET_POSITION(g_current_position_index);
+    Window*main_window = g_windows + WINDOW_MAIN;
     Control*board = main_window->controls + MAIN_WINDOW_BOARD;
     int32_t captured_piece_min_x = board->board.min_x;
     uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
@@ -2748,23 +2731,20 @@ void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_or
         {
             if (draw_captured_pieces)
             {
-                draw_icon(game->icon_bitmaps[player_index][piece.piece_type], main_window,
+                draw_icon(g_icon_bitmaps[player_index][piece.piece_type], main_window,
                     captured_piece_min_x, captured_pieces_min_y);
-                captured_piece_min_x += game->square_size / 2;
+                captured_piece_min_x += g_square_size / 2;
             }
         }
         else
         {
-            uint8_t screen_square_index =
-                SCREEN_SQUARE_INDEX(piece.square_index, game->engine_player_index);
-            int32_t bitmap_min_x =
-                board->board.min_x + game->square_size * FILE(screen_square_index);
-            int32_t bitmap_min_y =
-                board->board.min_y + game->square_size * RANK(screen_square_index);
-            if (game->selected_piece_index == piece_index)
+            uint8_t screen_square_index = SCREEN_SQUARE_INDEX(piece.square_index);
+            int32_t bitmap_min_x = board->board.min_x + g_square_size * FILE(screen_square_index);
+            int32_t bitmap_min_y = board->board.min_y + g_square_size * RANK(screen_square_index);
+            if (g_selected_piece_index == piece_index)
             {
-                Color*icon_bitmap = game->icon_bitmaps[current_position->active_player_index]
-                    [current_position->pieces[game->selected_piece_index].piece_type];
+                Color*icon_bitmap = g_icon_bitmaps[current_position->active_player_index]
+                    [current_position->pieces[g_selected_piece_index].piece_type];
                 Color tinted_icon_bitmap[3600];
                 for (size_t i = 0; i < 3600; ++i)
                 {
@@ -2779,12 +2759,12 @@ void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_or
             }
             else
             {
-                draw_icon(game->icon_bitmaps[player_index][piece.piece_type], main_window,
+                draw_icon(g_icon_bitmaps[player_index][piece.piece_type], main_window,
                     bitmap_min_x, bitmap_min_y);
             }
         }
     }
-    uint64_t time = game->seconds_left[player_index];
+    uint64_t time = g_seconds_left[player_index];
     char time_text[9];
     size_t char_index = 9;
     while (char_index)
@@ -2803,33 +2783,33 @@ void draw_player(Game*game, int32_t captured_pieces_min_y, int32_t timer_text_or
         timer_text_origin_y, g_black);
 }
 
-void draw_main_window(Game*game)
+void draw_main_window(void)
 {
-    Window*main_window = game->windows + WINDOW_MAIN;
+    Window*main_window = g_windows + WINDOW_MAIN;
     clear_window(main_window);
     Control*board = main_window->controls + MAIN_WINDOW_BOARD;
-    uint32_t board_width = FILE_COUNT * game->square_size;
+    uint32_t board_width = FILE_COUNT * g_square_size;
     draw_rectangle_border(main_window, board->board.min_x, board->board.min_y, board_width,
         board_width);
     for (size_t rank = 0; rank < RANK_COUNT; ++rank)
     {
-        int32_t square_min_y = board->board.min_y + game->square_size * rank;
+        int32_t square_min_y = board->board.min_y + g_square_size * rank;
         for (size_t file = 0; file < FILE_COUNT; ++file)
         {
             if ((rank + file) % 2)
             {
-                draw_rectangle(main_window, board->board.min_x + game->square_size * file,
-                    square_min_y, game->square_size, game->square_size, g_dark_square_gray);
+                draw_rectangle(main_window, board->board.min_x + g_square_size * file, square_min_y,
+                    g_square_size, g_square_size, g_dark_square_gray);
             }
         }
     }
-    color_square_with_index(main_window, &board->board, g_hovered_blue, game->square_size,
+    color_square_with_index(main_window, &board->board, g_hovered_blue,
         main_window->hovered_control_id - board->base_id);
-    color_square_with_index(main_window, &board->board, g_clicked_red, game->square_size,
+    color_square_with_index(main_window, &board->board, g_clicked_red,
         main_window->clicked_control_id - board->base_id);
     Control*save_game_button = main_window->controls + MAIN_WINDOW_SAVE_GAME;
     draw_active_button(main_window, save_game_button);
-    if (DRAW_BY_50_CAN_BE_CLAIMED(game))
+    if (DRAW_BY_50_CAN_BE_CLAIMED())
     {
         draw_active_button(main_window, main_window->controls + MAIN_WINDOW_CLAIM_DRAW);
     }
@@ -2838,7 +2818,7 @@ void draw_main_window(Game*game)
         draw_button(main_window, &main_window->controls[MAIN_WINDOW_CLAIM_DRAW].button, g_white,
             g_dark_square_gray);
     }
-    if (game->is_promoting)
+    if (g_is_promoting)
     {
         Control*promotion_selector = main_window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
         int32_t icon_min_x = promotion_selector->promotion_selector.min_x;
@@ -2857,20 +2837,17 @@ void draw_main_window(Game*game)
                 draw_rectangle(main_window, icon_min_x, 0, COLUMNS_PER_ICON, COLUMNS_PER_ICON,
                     g_hovered_blue);
             }
-            draw_icon(game->icon_bitmaps[!game->engine_player_index][g_promotion_options[i]],
-                main_window, icon_min_x, 0);
+            draw_icon(g_icon_bitmaps[!g_engine_player_index][g_promotion_options[i]], main_window,
+                icon_min_x, 0);
             icon_min_x += COLUMNS_PER_ICON;
         }
         draw_rectangle(main_window, icon_min_x, 0,
             main_window->dpi_data->control_border_thickness, COLUMNS_PER_ICON, g_black);
     }
-    draw_player(game,
-        board->board.min_y + board_width + main_window->dpi_data->control_border_thickness,
-        board->board.min_y + main_window->dpi_data->text_line_height, game->engine_player_index,
-        true);
-    draw_player(game, 0,
-        board->board.min_y + 7 * game->square_size + main_window->dpi_data->text_line_height,
-        !game->engine_player_index, !game->is_promoting);
+    draw_player(board->board.min_y + board_width + main_window->dpi_data->control_border_thickness,
+        board->board.min_y + main_window->dpi_data->text_line_height, g_engine_player_index, true);
+    draw_player(0, board->board.min_y + 7 * g_square_size + main_window->dpi_data->text_line_height,
+        !g_engine_player_index, !g_is_promoting);
 }
 
 void save_value(void**file_memory, void*value, uint32_t*file_size, size_t value_byte_count)
@@ -2903,21 +2880,21 @@ bool load_value(void**file_memory, void*out, uint32_t*file_size, size_t value_by
 
 #define SAVE_FILE_STATIC_PART_SIZE 119
 
-uint32_t save_game(void*file_memory, Game*game)
+uint32_t save_game(void*file_memory)
 {
-    uint64_t time_since_last_move = get_time() - game->last_move_time;
+    uint64_t time_since_last_move = get_time() - g_last_move_time;
     uint32_t file_size = 0;
     save_value(&file_memory, &time_since_last_move, &file_size, sizeof(time_since_last_move));
-    save_value(&file_memory, &game->time_increment, &file_size, sizeof(game->time_increment));
-    Position*current_position = GET_POSITION(game, game->current_position_index);
+    save_value(&file_memory, &g_time_increment, &file_size, sizeof(g_time_increment));
+    Position*current_position = GET_POSITION(g_current_position_index);
     save_value(&file_memory, &current_position->en_passant_file, &file_size,
         sizeof(current_position->en_passant_file));
     uint8_t active_player_index = current_position->active_player_index;
     save_value(&file_memory, &active_player_index, &file_size, sizeof(active_player_index));
     for (size_t player_index = 0; player_index < 2; ++player_index)
     {
-        save_value(&file_memory, game->times_left_as_of_last_move + player_index, &file_size,
-            sizeof(game->times_left_as_of_last_move[player_index]));
+        save_value(&file_memory, g_times_left_as_of_last_move + player_index, &file_size,
+            sizeof(g_times_left_as_of_last_move[player_index]));
         uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
         Piece*player_pieces = current_position->pieces + player_pieces_index;
         for (size_t piece_index = 0; piece_index < 16; ++piece_index)
@@ -2925,17 +2902,15 @@ uint32_t save_game(void*file_memory, Game*game)
             save_value(&file_memory, player_pieces + piece_index, &file_size, sizeof(Piece));
         }
     }
-    save_value(&file_memory, &game->draw_by_50_count, &file_size, sizeof(game->draw_by_50_count));
-    save_value(&file_memory, &game->engine_player_index, &file_size,
-        sizeof(game->engine_player_index));
-    save_value(&file_memory, &game->unique_state_count, &file_size,
-        sizeof(game->unique_state_count));
+    save_value(&file_memory, &g_draw_by_50_count, &file_size, sizeof(g_draw_by_50_count));
+    save_value(&file_memory, &g_engine_player_index, &file_size, sizeof(g_engine_player_index));
+    save_value(&file_memory, &g_unique_state_count, &file_size, sizeof(g_unique_state_count));
     ASSERT(file_size <= SAVE_FILE_STATIC_PART_SIZE);
-    BoardStateNode*external_nodes = EXTERNAL_STATE_NODES(game);
-    for (size_t bucket_index = 0; bucket_index < game->state_bucket_count; ++bucket_index)
+    BoardStateNode*external_nodes = EXTERNAL_STATE_NODES();
+    for (size_t bucket_index = 0; bucket_index < g_state_bucket_count; ++bucket_index)
     {
-        BoardStateNode*node = game->state_buckets + bucket_index;
-        if (node->count && node->generation == game->state_generation)
+        BoardStateNode*node = g_state_buckets + bucket_index;
+        if (node->count && node->generation == g_state_generation)
         {
             while (true)
             {
@@ -2957,18 +2932,18 @@ uint32_t save_game(void*file_memory, Game*game)
     return file_size;
 }
 
-bool load_file(Game*game, void*file_memory, uint32_t file_size)
+bool load_file(void*file_memory, uint32_t file_size)
 {
     uint64_t time_since_last_move;
     if (!load_value(&file_memory, &time_since_last_move, &file_size, sizeof(time_since_last_move)))
     {
         return false;
     }
-    if (!load_value(&file_memory, &game->time_increment, &file_size, sizeof(game->time_increment)))
+    if (!load_value(&file_memory, &g_time_increment, &file_size, sizeof(g_time_increment)))
     {
         return false;
     }
-    Position*current_position = GET_POSITION(game, game->first_leaf_index);
+    Position*current_position = GET_POSITION(g_first_leaf_index);
     if (!load_value(&file_memory, &current_position->en_passant_file, &file_size,
         sizeof(current_position->en_passant_file)) ||
         current_position->en_passant_file > FILE_COUNT)
@@ -2984,13 +2959,13 @@ bool load_file(Game*game, void*file_memory, uint32_t file_size)
     current_position->active_player_index = active_player_index;
     for (size_t player_index = 0; player_index < 2; ++player_index)
     {
-        uint64_t*time_left_as_of_last_move = game->times_left_as_of_last_move + player_index;
+        uint64_t*time_left_as_of_last_move = g_times_left_as_of_last_move + player_index;
         if (!load_value(&file_memory, time_left_as_of_last_move, &file_size,
             sizeof(*time_left_as_of_last_move)))
         {
             return false;
         }
-        game->seconds_left[player_index] = *time_left_as_of_last_move / g_counts_per_second;
+        g_seconds_left[player_index] = *time_left_as_of_last_move / g_counts_per_second;
         Piece*player_pieces = current_position->pieces + PLAYER_PIECES_INDEX(player_index);
         for (size_t piece_index = 0; piece_index < 16; ++piece_index)
         {
@@ -3013,34 +2988,32 @@ bool load_file(Game*game, void*file_memory, uint32_t file_size)
         player_pieces[G_KNIGHT_INDEX].piece_type = PIECE_KNIGHT;
         player_pieces[H_ROOK_INDEX].piece_type = PIECE_ROOK;
     }
-    if (game->times_left_as_of_last_move[active_player_index] < time_since_last_move)
+    if (g_times_left_as_of_last_move[active_player_index] < time_since_last_move)
     {
         return false;
     }
-    if (!load_value(&file_memory, &game->draw_by_50_count, &file_size,
-        sizeof(game->draw_by_50_count)))
+    if (!load_value(&file_memory, &g_draw_by_50_count, &file_size, sizeof(g_draw_by_50_count)))
     {
         return false;
     }
-    if (!load_value(&file_memory, &game->engine_player_index, &file_size,
-        sizeof(game->engine_player_index)) || game->engine_player_index > PLAYER_INDEX_BLACK)
+    if (!load_value(&file_memory, &g_engine_player_index, &file_size,
+        sizeof(g_engine_player_index)) || g_engine_player_index > PLAYER_INDEX_BLACK)
     {
         return false;
     }
-    if (!load_value(&file_memory, &game->unique_state_count, &file_size,
-        sizeof(game->unique_state_count)))
+    if (!load_value(&file_memory, &g_unique_state_count, &file_size, sizeof(g_unique_state_count)))
     {
         return false;
     }
     uint32_t bucket_count_bit_count;
-    BIT_SCAN_REVERSE(&bucket_count_bit_count, game->unique_state_count);
+    BIT_SCAN_REVERSE(&bucket_count_bit_count, g_unique_state_count);
     uint16_t state_bucket_count = 1 << bucket_count_bit_count;
-    if (state_bucket_count < game->unique_state_count)
+    if (state_bucket_count < g_unique_state_count)
     {
         state_bucket_count = state_bucket_count << 1;
     }
-    init_board_state_archive(game, state_bucket_count);
-    for (uint16_t i = 0; i < game->unique_state_count; ++i)
+    init_board_state_archive(state_bucket_count);
+    for (uint16_t i = 0; i < g_unique_state_count; ++i)
     {
         BoardState state;
         if (!load_value(&file_memory, &state.square_mask, &file_size, sizeof(state.square_mask)))
@@ -3056,7 +3029,7 @@ bool load_file(Game*game, void*file_memory, uint32_t file_size)
                 return false;
             }
         }
-        archive_board_state(game, &state);
+        archive_board_state(&state);
     }
     for (size_t square_index = 0; square_index < ARRAY_COUNT(current_position->squares);
         ++square_index)
@@ -3075,32 +3048,32 @@ bool load_file(Game*game, void*file_memory, uint32_t file_size)
     current_position->next_move_index = NULL_POSITION;
     SET_PREVIOUS_LEAF_INDEX(current_position, NULL_POSITION);
     SET_NEXT_LEAF_INDEX(current_position, NULL_POSITION);
-    make_move_current(game, game->first_leaf_index);
-    game->last_move_time = get_time() - time_since_last_move;
-    game->selected_piece_index = NULL_PIECE;
+    make_move_current(g_first_leaf_index);
+    g_last_move_time = get_time() - time_since_last_move;
+    g_selected_piece_index = NULL_PIECE;
     return true;
 }
 
-bool load_game(Game*game, void*file_memory, uint32_t file_size)
+bool load_game(void*file_memory, uint32_t file_size)
 {
-    game->first_leaf_index = allocate_position(game);
-    bool out = load_file(game, file_memory, file_size);
+    g_first_leaf_index = allocate_position();
+    bool out = load_file(file_memory, file_size);
     if (out)
     {
-        game->run_engine = true;
+        g_run_engine = true;
     }
     else
     {
-        free_position(game, game->first_leaf_index);
+        free_position(g_first_leaf_index);
     }
     return out;
 }
 
-void free_game(Game*game)
+void free_game(void)
 {
-    FREE_MEMORY(game->state_buckets);
-    game->pool_cursor = 0;
-    game->index_of_first_free_pool_position = NULL_POSITION;
+    FREE_MEMORY(g_state_buckets);
+    g_pool_cursor = 0;
+    g_index_of_first_free_pool_position = NULL_POSITION;
 }
 
 void init_piece(Position*position, PieceType piece_type, uint8_t piece_index, uint8_t square_index,
@@ -3114,12 +3087,12 @@ void init_piece(Position*position, PieceType piece_type, uint8_t piece_index, ui
     position->squares[square_index] = piece_index;
 }
 
-void init_game(Game*game)
+void init_game(void)
 {
-    game->selected_piece_index = NULL_PIECE;
-    game->first_leaf_index = allocate_position(game);
-    game->next_leaf_to_evaluate_index = game->first_leaf_index;
-    Position*position = GET_POSITION(game, game->first_leaf_index);
+    g_selected_piece_index = NULL_PIECE;
+    g_first_leaf_index = allocate_position();
+    g_next_leaf_to_evaluate_index = g_first_leaf_index;
+    Position*position = GET_POSITION(g_first_leaf_index);
     position->parent_index = NULL_POSITION;
     position->next_move_index = NULL_POSITION;
     SET_PREVIOUS_LEAF_INDEX(position, NULL_POSITION);
@@ -3146,44 +3119,44 @@ void init_game(Game*game)
         init_piece(position, PIECE_PAWN, 13, SQUARE_INDEX(rank, 5), player_index);
         init_piece(position, PIECE_PAWN, 14, SQUARE_INDEX(rank, 6), player_index);
         init_piece(position, PIECE_PAWN, 15, SQUARE_INDEX(rank, 7), player_index);
-        game->seconds_left[player_index] = game->time_control[4].digit +
-            10 * game->time_control[3].digit + 60 * game->time_control[2].digit +
-            600 * game->time_control[1].digit + 3600 * game->time_control[0].digit;
+        g_seconds_left[player_index] = g_time_control[4].digit + 10 * g_time_control[3].digit +
+            60 * g_time_control[2].digit + 600 * g_time_control[1].digit +
+            3600 * g_time_control[0].digit;
     }
     for (size_t square_index = 16; square_index < 48; ++square_index)
     {
         position->squares[square_index] = NULL_PIECE;
     }
-    init_board_state_archive(game, 32);
-    game->selected_move_index = &game->first_leaf_index;
-    make_move_current(game, game->first_leaf_index);
-    Window*main_window = game->windows + WINDOW_MAIN;
+    init_board_state_archive(32);
+    g_selected_move_index = &g_first_leaf_index;
+    make_move_current(g_first_leaf_index);
+    Window*main_window = g_windows + WINDOW_MAIN;
     main_window->hovered_control_id = NULL_CONTROL;
     main_window->clicked_control_id = NULL_CONTROL;
-    game->draw_by_50_count = 0;
-    game->run_engine = true;
-    game->is_promoting = false;
-    game->times_left_as_of_last_move[0] = g_counts_per_second * game->seconds_left[0];
-    game->times_left_as_of_last_move[1] = game->times_left_as_of_last_move[0];
-    game->time_increment = g_counts_per_second * (game->increment[2].digit +
-        10 * game->increment[1].digit + 60 * game->increment[0].digit);
-    game->last_move_time = get_time();
+    g_draw_by_50_count = 0;
+    g_run_engine = true;
+    g_is_promoting = false;
+    g_times_left_as_of_last_move[0] = g_counts_per_second * g_seconds_left[0];
+    g_times_left_as_of_last_move[1] = g_times_left_as_of_last_move[0];
+    g_time_increment = g_counts_per_second * (g_increment[2].digit + 10 * g_increment[1].digit +
+        60 * g_increment[0].digit);
+    g_last_move_time = get_time();
 }
 
-void init(Game*game, void*font_data, size_t font_data_size)
+void init(void*font_data, size_t font_data_size)
 {
     FT_Init_FreeType(&g_freetype_library);
     FT_New_Memory_Face(g_freetype_library, font_data, font_data_size, 0, &g_face);
-    game->windows[WINDOW_START].controls = game->dialog_controls;
-    game->position_pool = RESERVE_MEMORY(NULL_POSITION * sizeof(Position));
-    game->index_of_first_free_pool_position = NULL_POSITION;
-    game->pool_cursor = 0;
-    for (size_t i = 0; i < ARRAY_COUNT(game->dpi_datas); ++i)
+    g_windows[WINDOW_START].controls = g_dialog_controls;
+    g_position_pool = RESERVE_MEMORY(NULL_POSITION * sizeof(Position));
+    g_index_of_first_free_pool_position = NULL_POSITION;
+    g_pool_cursor = 0;
+    for (size_t i = 0; i < ARRAY_COUNT(g_dpi_datas); ++i)
     {
-        game->dpi_datas[i].reference_count = 0;
+        g_dpi_datas[i].reference_count = 0;
     }
     g_max_time = g_counts_per_second * 359999;
-    DigitInput*digit = game->time_control;
+    DigitInput*digit = g_time_control;
     digit->digit = 0;
     digit->is_before_colon = true;
     ++digit;
@@ -3198,7 +3171,7 @@ void init(Game*game, void*font_data, size_t font_data_size)
     ++digit;
     digit->digit = 0;
     digit->is_before_colon = false;
-    digit = game->increment;
+    digit = g_increment;
     digit->digit = 0;
     digit->is_before_colon = true;
     ++digit;
@@ -3207,5 +3180,5 @@ void init(Game*game, void*font_data, size_t font_data_size)
     ++digit;
     digit->digit = 5;
     digit->is_before_colon = false;
-    game->run_engine = false;
+    g_run_engine = false;
 }

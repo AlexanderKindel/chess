@@ -1,17 +1,14 @@
 #include "chess.c"
 #include <windowsx.h>
 
-typedef struct WindowsGame
+typedef union StatusData
 {
-    Game game;
-    union
-    {
-        char*text;
-        uint8_t status;
-    };
-    HWND dialog_handle;
-} WindowsGame;
+    char*text;
+    uint8_t status;
+} StatusData;
 
+StatusData g_status_data;
+HWND g_dialog_handle;
 DWORD g_dialog_style = WS_OVERLAPPED | WS_CAPTION | WS_MINIMIZEBOX;
 
 void resize_window(Window*window, uint32_t width, uint32_t height)
@@ -56,47 +53,46 @@ void center_window(Window*window, HWND window_handle, DWORD window_style)
         window_rect.bottom - window_rect.top, SWP_SHOWWINDOW);
 }
 
-void draw_and_render_main_window(WindowsGame*game, HWND window_handle)
+void draw_and_render_main_window(HWND window_handle)
 {
-    draw_main_window(&game->game);
-    render_window(game->game.windows + WINDOW_MAIN, window_handle);
+    draw_main_window();
+    render_window(g_windows + WINDOW_MAIN, window_handle);
 }
 
-void run_message_loop(WindowsGame*game, HWND main_window_handle);
+void run_message_loop(HWND main_window_handle);
 
-void run_dialog(WindowsGame*game, Window*dialog, HWND dialog_handle, HWND main_window_handle)
+void run_dialog(Window*dialog, HWND dialog_handle, HWND main_window_handle)
 {
-    game->dialog_handle = dialog_handle;
-    SetWindowLongPtrW(dialog_handle, GWLP_USERDATA, (LONG_PTR)game);
+    g_dialog_handle = dialog_handle;
     dialog->hovered_control_id = NULL_CONTROL;
     dialog->clicked_control_id = NULL_CONTROL;
     center_window(dialog, dialog_handle, g_dialog_style);
-    run_message_loop(game, main_window_handle);
+    run_message_loop(main_window_handle);
     VirtualFree(dialog->pixels, 0, MEM_RELEASE);
-    game->dialog_handle = 0;
+    g_dialog_handle = 0;
 }
 
 char g_start_window_class_name[] = "Start";
 
-void run_game_over_dialog(WindowsGame*game, HWND main_window_handle)
+void run_game_over_dialog(HWND main_window_handle)
 {
     KillTimer(main_window_handle, 1);
-    if (game->dialog_handle)
+    if (g_dialog_handle)
     {
-        DestroyWindow(game->dialog_handle);
-        VirtualFree(game->game.windows[WINDOW_PROMOTION].pixels, 0, MEM_RELEASE);
+        DestroyWindow(g_dialog_handle);
+        VirtualFree(g_windows[WINDOW_PROMOTION].pixels, 0, MEM_RELEASE);
     }
-    free_game(&game->game);
+    free_game();
     HWND dialog_handle = CreateWindowEx(WS_EX_TOPMOST, g_start_window_class_name, "Game Over",
         g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
-    init_start_window(&game->game, game->text, GetDpiForWindow(dialog_handle));
-    run_dialog(game, game->game.windows + WINDOW_START, dialog_handle, main_window_handle);
+    init_start_window(g_status_data.text, GetDpiForWindow(dialog_handle));
+    run_dialog(g_windows + WINDOW_START, dialog_handle, main_window_handle);
     BringWindowToTop(main_window_handle);
-    switch (game->status)
+    switch (g_status_data.status)
     {
     case START_NEW_GAME:
     {
-        draw_and_render_main_window(game, main_window_handle);
+        draw_and_render_main_window(main_window_handle);
     }
     case START_LOAD_GAME:
     {
@@ -110,49 +106,47 @@ void run_game_over_dialog(WindowsGame*game, HWND main_window_handle)
     }
 }
 
-void handle_turn_action(WindowsGame*game, HWND main_window_handle, GUIAction action)
+void handle_turn_action(HWND main_window_handle, GUIAction action)
 {
     if (action == ACTION_NONE)
     {
         return;
     }
-    draw_and_render_main_window(game, main_window_handle);
+    draw_and_render_main_window(main_window_handle);
     switch (action)
     {
     case ACTION_CHECKMATE:
     {
-        if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-            PLAYER_INDEX_WHITE)
+        if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
         {
-            game->text = "Checkmate. Black wins.";
+            g_status_data.text = "Checkmate. Black wins.";
         }
         else
         {
-            game->text = "Checkmate. White wins.";
+            g_status_data.text = "Checkmate. White wins.";
         }
         break;
     }
     case ACTION_FLAG:
     {
-        if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-            PLAYER_INDEX_WHITE)
+        if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
         {
-            game->text = "White is out of time. Black wins.";
+            g_status_data.text = "White is out of time. Black wins.";
         }
         else
         {
-            game->text = "Black is out of time. White wins.";
+            g_status_data.text = "Black is out of time. White wins.";
         }
         break;
     }
     case ACTION_REPETITION_DRAW:
     {
-        game->text = "Draw by repetition.";
+        g_status_data.text = "Draw by repetition.";
         break;
     }
     case ACTION_STALEMATE:
     {
-        game->text = "Stalemate.";
+        g_status_data.text = "Stalemate.";
         break;
     }
     default:
@@ -160,15 +154,15 @@ void handle_turn_action(WindowsGame*game, HWND main_window_handle, GUIAction act
         return;
     }
     }
-    run_game_over_dialog(game, main_window_handle);
+    run_game_over_dialog(main_window_handle);
 }
 
-void run_message_loop(WindowsGame*game, HWND main_window_handle)
+void run_message_loop(HWND main_window_handle)
 {
     while (true)
     {
         MSG message;
-        if (game->game.run_engine)
+        if (g_run_engine)
         {
             while (PeekMessage(&message, 0, 0, 0, PM_REMOVE))
             {
@@ -179,7 +173,7 @@ void run_message_loop(WindowsGame*game, HWND main_window_handle)
                 TranslateMessage(&message);
                 DispatchMessage(&message);
             }
-            handle_turn_action(game, main_window_handle, do_engine_iteration(&game->game));
+            handle_turn_action(main_window_handle, do_engine_iteration());
         }
         else
         {
@@ -198,10 +192,10 @@ void run_message_loop(WindowsGame*game, HWND main_window_handle)
 
 char g_setup_window_class_name[] = "Set Up Game";
 
-void draw_and_render_setup_window(WindowsGame*game, HWND window_handle)
+void draw_and_render_setup_window(HWND window_handle)
 {
-    Window*window = game->game.windows + WINDOW_SETUP;
-    draw_controls(&game->game, window);
+    Window*window = g_windows + WINDOW_SETUP;
+    draw_controls(window);
     render_window(window, window_handle);
 }
 
@@ -212,21 +206,19 @@ LRESULT CALLBACK setup_proc(HWND window_handle, UINT message, WPARAM w_param, LP
     case WM_LBUTTONDOWN:
     {
         SetCapture(window_handle);
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_left_mouse_button_down(game->game.windows + WINDOW_SETUP, GET_X_LPARAM(l_param),
+        if (handle_left_mouse_button_down(g_windows + WINDOW_SETUP, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_setup_window(game, window_handle);
+            draw_and_render_setup_window(window_handle);
         }
         return 0;
     }
     case WM_LBUTTONUP:
     {
         ReleaseCapture();
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        Window*window = game->game.windows + WINDOW_SETUP;
+        Window*window = g_windows + WINDOW_SETUP;
         uint8_t old_clicked_control_id = window->clicked_control_id;
-        if (setup_window_handle_left_mouse_button_up(&game->game, window, GET_X_LPARAM(l_param),
+        if (setup_window_handle_left_mouse_button_up(window, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
             DestroyWindow(window_handle);
@@ -234,7 +226,7 @@ LRESULT CALLBACK setup_proc(HWND window_handle, UINT message, WPARAM w_param, LP
         }
         else if (window->clicked_control_id != old_clicked_control_id)
         {
-            draw_and_render_setup_window(game, window_handle);
+            draw_and_render_setup_window(window_handle);
         }
         return 0;
     }
@@ -257,33 +249,29 @@ LRESULT CALLBACK setup_proc(HWND window_handle, UINT message, WPARAM w_param, LP
             }
             }
         }
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (setup_window_handle_key_down(&game->game, game->game.windows + WINDOW_SETUP, w_param))
+        if (setup_window_handle_key_down(g_windows + WINDOW_SETUP, w_param))
         {
-            draw_and_render_setup_window(game, window_handle);
+            draw_and_render_setup_window(window_handle);
         }
         return 0;
     }
     case WM_MOUSEMOVE:
     {
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_mouse_move(game->game.windows + WINDOW_PROMOTION, GET_X_LPARAM(l_param),
+        if (handle_mouse_move(g_windows + WINDOW_PROMOTION, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_setup_window(game, window_handle);
+            draw_and_render_setup_window(window_handle);
         }
         return 0;
     }
     case WM_PAINT:
     {
-        draw_and_render_setup_window((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA),
-            window_handle);
+        draw_and_render_setup_window(window_handle);
         return 0;
     }
     case WM_SIZE:
     {
-        resize_window(((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA))->
-            game.windows + WINDOW_SETUP, LOWORD(l_param), HIWORD(l_param));
+        resize_window(g_windows + WINDOW_SETUP, LOWORD(l_param), HIWORD(l_param));
         return 0;
     }
     default:
@@ -293,10 +281,10 @@ LRESULT CALLBACK setup_proc(HWND window_handle, UINT message, WPARAM w_param, LP
     }
 }
 
-void draw_and_render_start_window(WindowsGame*game, HWND window_handle)
+void draw_and_render_start_window(HWND window_handle)
 {
-    draw_start_window(&game->game, game->text);
-    render_window(game->game.windows + WINDOW_START, window_handle);
+    draw_start_window(g_status_data.text);
+    render_window(g_windows + WINDOW_START, window_handle);
 }
 
 LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
@@ -306,19 +294,17 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
     case WM_LBUTTONDOWN:
     {
         SetCapture(window_handle);
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_left_mouse_button_down(game->game.windows + WINDOW_START, GET_X_LPARAM(l_param),
+        if (handle_left_mouse_button_down(g_windows + WINDOW_START, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_start_window(game, window_handle);
+            draw_and_render_start_window(window_handle);
         }
         return 0;
     }
     case WM_LBUTTONUP:
     {
         ReleaseCapture();
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        Window*window = game->game.windows + WINDOW_START;
+        Window*window = g_windows + WINDOW_START;
         uint8_t old_clicked_control_id = window->clicked_control_id;
         uint8_t id = handle_left_mouse_button_up(window, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param));
@@ -351,8 +337,8 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
                                 if (bytes_read == file_size.QuadPart)
                                 {
                                     CloseHandle(file_handle);
-                                    load_game(&game->game, file_memory, file_size.QuadPart);
-                                    game->status = id;
+                                    load_game(file_memory, file_size.QuadPart);
+                                    g_status_data.status = id;
                                     DestroyWindow(window_handle);
                                     PostQuitMessage(0);
                                     return 0;
@@ -371,31 +357,30 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
             HWND dialog_handle = CreateWindowEx(WS_EX_TOPMOST, g_setup_window_class_name,
                 g_setup_window_class_name, g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT,
                 CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
-            init_setup_window(&game->game, GetDpiForWindow(dialog_handle));
-            run_dialog(game, game->game.windows + WINDOW_SETUP, dialog_handle, 0);
+            init_setup_window(GetDpiForWindow(dialog_handle));
+            run_dialog(g_windows + WINDOW_SETUP, dialog_handle, 0);
             PostQuitMessage(0);
-            game->status = id;
-            init_game(&game->game);
+            g_status_data.status = id;
+            init_game();
             return 0;
         }
         else if (id == window->controls[START_QUIT].base_id)
         {
-            game->status = id;
+            g_status_data.status = id;
             DestroyWindow(window_handle);
             PostQuitMessage(0);
             return 0;
         }
         if (id != old_clicked_control_id)
         {
-            draw_and_render_start_window(game, window_handle);
+            draw_and_render_start_window(window_handle);
         }
         return 0;
     }
     case WM_DPICHANGED:
     {
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        free_dpi_data(game->game.windows + WINDOW_START);
-        set_start_window_dpi(&game->game, game->text, HIWORD(w_param));
+        free_dpi_data(g_windows + WINDOW_START);
+        set_start_window_dpi(g_status_data.text, HIWORD(w_param));
         RECT*client_rect = (RECT*)l_param;
         SetWindowPos(window_handle, 0, client_rect->left, client_rect->top,
             client_rect->right - client_rect->left, client_rect->bottom - client_rect->top,
@@ -404,24 +389,21 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
     }
     case WM_MOUSEMOVE:
     {
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        if (handle_mouse_move(game->game.windows + WINDOW_START, GET_X_LPARAM(l_param),
+        if (handle_mouse_move(g_windows + WINDOW_START, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_start_window(game, window_handle);
+            draw_and_render_start_window(window_handle);
         }
         return 0;
     }
     case WM_PAINT:
     {
-        draw_and_render_start_window((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA),
-            window_handle);
+        draw_and_render_start_window(window_handle);
         return 0;
     }
     case WM_SIZE:
     {
-        resize_window(((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA))->
-            game.windows + WINDOW_START, LOWORD(l_param), HIWORD(l_param));
+        resize_window(g_windows + WINDOW_START, LOWORD(l_param), HIWORD(l_param));
         return 0;
     }
     default:
@@ -437,9 +419,8 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     {
     case WM_DPICHANGED:
     {
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        free_dpi_data(game->game.windows + WINDOW_MAIN);
-        set_main_window_dpi(&game->game, HIWORD(w_param));
+        free_dpi_data(g_windows + WINDOW_MAIN);
+        set_main_window_dpi(HIWORD(w_param));
         RECT*client_rect = (RECT*)l_param;
         SetWindowPos(window_handle, 0, client_rect->left, client_rect->top,
             client_rect->right - client_rect->left, client_rect->bottom - client_rect->top,
@@ -448,42 +429,37 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     }
     case WM_PAINT:
     {
-        draw_and_render_main_window((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA),
-            window_handle);
+        draw_and_render_main_window(window_handle);
         return 0;
     }
     case WM_SIZE:
     {
-        resize_window(((WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA))->
-            game.windows + WINDOW_MAIN, LOWORD(l_param), HIWORD(l_param));
+        resize_window(g_windows + WINDOW_MAIN, LOWORD(l_param), HIWORD(l_param));
         return 0;
     }
     case WM_TIMER:
     {
-        WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-        UpdateTimerStatus status = update_timer(&game->game);
+        UpdateTimerStatus status = update_timer();
         if (status & UPDATE_TIMER_REDRAW)
         {
-            draw_and_render_main_window(game, window_handle);
+            draw_and_render_main_window(window_handle);
         }
         if (status & UPDATE_TIMER_TIME_OUT)
         {
-            if (game->game.position_pool[game->game.current_position_index].active_player_index ==
-                PLAYER_INDEX_WHITE)
+            if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
             {
-                game->text = "White is out of time. Black wins.";
+                g_status_data.text = "White is out of time. Black wins.";
             }
             else
             {
-                game->text = "Black is out of time. White wins.";
+                g_status_data.text = "Black is out of time. White wins.";
             }
-            run_game_over_dialog(game, window_handle);
+            run_game_over_dialog(window_handle);
         }
         return 0;
     }
     }
-    WindowsGame*game = (WindowsGame*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
-    if (game && game->dialog_handle)
+    if (g_dialog_handle)
     {
         return DefWindowProc(window_handle, message, w_param, l_param);
     }
@@ -497,21 +473,20 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     case WM_LBUTTONDOWN:
     {
         SetCapture(window_handle);
-        if (main_window_handle_left_mouse_button_down(&game->game, GET_X_LPARAM(l_param),
-            GET_Y_LPARAM(l_param)))
+        if (main_window_handle_left_mouse_button_down(GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_main_window(game, window_handle);
+            draw_and_render_main_window(window_handle);
         }
         return 0;
     }
     case WM_LBUTTONUP:
     {
         ReleaseCapture();
-        GUIAction action = main_window_handle_left_mouse_button_up(&game->game,
-            GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
+        GUIAction action =
+            main_window_handle_left_mouse_button_up(GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
         if (action == ACTION_SAVE_GAME)
         {
-            draw_and_render_main_window(game, window_handle);
+            draw_and_render_main_window(window_handle);
             char file_name[256];
             OPENFILENAMEA open_file_name = { 0 };
             open_file_name.lStructSize = sizeof(open_file_name);
@@ -526,9 +501,9 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 if (file_handle != INVALID_HANDLE_VALUE)
                 {
                     void*file_memory = VirtualAlloc(0, SAVE_FILE_STATIC_PART_SIZE +
-                        game->game.unique_state_count * sizeof(BoardState),
+                        g_unique_state_count * sizeof(BoardState),
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                    uint32_t file_size = save_game(file_memory, &game->game);
+                    uint32_t file_size = save_game(file_memory);
                     DWORD bytes_written;
                     WriteFile(file_handle, file_memory, file_size, &bytes_written, 0);
                     VirtualFree(file_memory, 0, MEM_RELEASE);
@@ -538,16 +513,16 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         }
         else
         {
-            handle_turn_action(game, window_handle, action);
+            handle_turn_action(window_handle, action);
         }
         return 0;
     }
     case WM_MOUSEMOVE:
     {
-        if (handle_mouse_move(game->game.windows + WINDOW_MAIN, GET_X_LPARAM(l_param),
+        if (handle_mouse_move(g_windows + WINDOW_MAIN, GET_X_LPARAM(l_param),
             GET_Y_LPARAM(l_param)))
         {
-            draw_and_render_main_window(game, window_handle);
+            draw_and_render_main_window(window_handle);
         }
         return 0;
     }
@@ -558,7 +533,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     }
 }
 
-void load_piece_icon_bitmap(Game*game, PieceType piece_type, uint8_t player_index, char*file_name,
+void load_piece_icon_bitmap(PieceType piece_type, uint8_t player_index, char*file_name,
     char*exe_path, size_t exe_path_length)
 {
     while (*file_name)
@@ -570,12 +545,12 @@ void load_piece_icon_bitmap(Game*game, PieceType piece_type, uint8_t player_inde
     exe_path[exe_path_length] = 0;
     HANDLE file_handle =
         CreateFileA(exe_path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
-    ReadFile(file_handle, game->icon_bitmaps[player_index][piece_type],
-        sizeof(Color) * PIXELS_PER_ICON, 0, 0);
+    ReadFile(file_handle, g_icon_bitmaps[player_index][piece_type], sizeof(Color) * PIXELS_PER_ICON,
+        0, 0);
     CloseHandle(file_handle);
 }
 
-HWND windows_init(WindowsGame*game)
+HWND windows_init(void)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     SYSTEM_INFO system_info;
@@ -595,13 +570,12 @@ HWND windows_init(WindowsGame*game)
     RegisterClassEx(&wc);
     HWND dialog_handle = CreateWindow(g_start_window_class_name, g_start_window_class_name,
         g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
-    SetWindowLongPtrW(dialog_handle, GWLP_USERDATA, (LONG_PTR)game);
     uint16_t dpi = GetDpiForWindow(dialog_handle);
     NONCLIENTMETRICSW non_client_metrics;
     non_client_metrics.cbSize = sizeof(NONCLIENTMETRICSW);
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, non_client_metrics.cbSize, &non_client_metrics,
         0);
-    game->game.font_size = ((-non_client_metrics.lfMessageFont.lfHeight * 72) << 6) / dpi;
+    g_font_size = ((-non_client_metrics.lfMessageFont.lfHeight * 72) << 6) / dpi;
     HFONT win_font = CreateFont(0, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
         OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, "Ariel");
     HDC device_context = GetDC(dialog_handle);
@@ -611,50 +585,49 @@ HWND windows_init(WindowsGame*game)
     GetFontData(device_context, 0, 0, font_data, font_data_size);
     ReleaseDC(dialog_handle, device_context);
     DeleteObject(win_font);
-    init(&game->game, font_data, font_data_size);
-    game->text = "";
-    init_start_window(&game->game, game->text, GetDpiForWindow(dialog_handle));
-    run_dialog(game, game->game.windows + WINDOW_START, dialog_handle, 0);
-    if (game->status == START_QUIT)
+    init(font_data, font_data_size);
+    g_status_data.text = "";
+    init_start_window(g_status_data.text, GetDpiForWindow(dialog_handle));
+    run_dialog(g_windows + WINDOW_START, dialog_handle, 0);
+    if (g_status_data.status == START_QUIT)
     {
         return 0;
     }
     char exe_path[256];
     size_t exe_path_length =
         GetModuleFileNameA(0, exe_path, sizeof(exe_path)) + 1 - sizeof("windows_chess.exe");
-    load_piece_icon_bitmap(&game->game, PIECE_ROOK, PLAYER_INDEX_WHITE, "whiteRook.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_ROOK, PLAYER_INDEX_WHITE, "whiteRook.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KNIGHT, PLAYER_INDEX_WHITE, "whiteKnight.bin",
-        exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_BISHOP, PLAYER_INDEX_WHITE, "whiteBishop.bin",
-        exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_QUEEN, PLAYER_INDEX_WHITE, "whiteQueen.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_KNIGHT, PLAYER_INDEX_WHITE, "whiteKnight.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_PAWN, PLAYER_INDEX_WHITE, "whitePawn.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_BISHOP, PLAYER_INDEX_WHITE, "whiteBishop.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KING, PLAYER_INDEX_WHITE, "whiteKing.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_QUEEN, PLAYER_INDEX_WHITE, "whiteQueen.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_ROOK, PLAYER_INDEX_BLACK, "blackRook.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_PAWN, PLAYER_INDEX_WHITE, "whitePawn.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KNIGHT, PLAYER_INDEX_BLACK, "blackKnight.bin",
-        exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_BISHOP, PLAYER_INDEX_BLACK, "blackBishop.bin",
-        exe_path, exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_QUEEN, PLAYER_INDEX_BLACK, "blackQueen.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_KING, PLAYER_INDEX_WHITE, "whiteKing.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_PAWN, PLAYER_INDEX_BLACK, "blackPawn.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_ROOK, PLAYER_INDEX_BLACK, "blackRook.bin", exe_path,
         exe_path_length);
-    load_piece_icon_bitmap(&game->game, PIECE_KING, PLAYER_INDEX_BLACK, "blackKing.bin", exe_path,
+    load_piece_icon_bitmap(PIECE_KNIGHT, PLAYER_INDEX_BLACK, "blackKnight.bin", exe_path,
+        exe_path_length);
+    load_piece_icon_bitmap(PIECE_BISHOP, PLAYER_INDEX_BLACK, "blackBishop.bin", exe_path,
+        exe_path_length);
+    load_piece_icon_bitmap(PIECE_QUEEN, PLAYER_INDEX_BLACK, "blackQueen.bin", exe_path,
+        exe_path_length);
+    load_piece_icon_bitmap(PIECE_PAWN, PLAYER_INDEX_BLACK, "blackPawn.bin", exe_path,
+        exe_path_length);
+    load_piece_icon_bitmap(PIECE_KING, PLAYER_INDEX_BLACK, "blackKing.bin", exe_path,
         exe_path_length);
     wc.lpfnWndProc = main_window_proc;
     wc.lpszClassName = "Chess";
     RegisterClassEx(&wc);
-    game->dialog_handle = 0;
+    g_dialog_handle = 0;
     HWND window_handle = CreateWindow(wc.lpszClassName, "Chess", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
-    SetWindowLongPtrW(window_handle, GWLP_USERDATA, (LONG_PTR)game);
-    init_main_window(&game->game, dpi);
-    center_window(game->game.windows + WINDOW_MAIN, window_handle, WS_OVERLAPPEDWINDOW);
+    init_main_window(dpi);
+    center_window(g_windows + WINDOW_MAIN, window_handle, WS_OVERLAPPEDWINDOW);
     SetTimer(window_handle, 1, USER_TIMER_MINIMUM, 0);
     return window_handle;
 }
@@ -662,11 +635,10 @@ HWND windows_init(WindowsGame*game)
 int WINAPI wWinMain(HINSTANCE instance_handle, HINSTANCE previous_instance_handle,
     PWSTR command_line, int show)
 {
-    WindowsGame game;
-    HWND main_window_handle = windows_init(&game);
+    HWND main_window_handle = windows_init();
     if (main_window_handle)
     {
-        run_message_loop(&game, main_window_handle);
+        run_message_loop(main_window_handle);
     }
     return 0;
 }
