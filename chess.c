@@ -12,16 +12,17 @@ char g_codepoints[] = { ' ', '.', '0', '1', '2', '3', '4', '5', '6', '7', '8', '
 'D', 'I', 'L', 'N', 'Q', 'S', 'T', 'W', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm',
 'n', 'o', 'p', 'r', 's', 't', 'u', 'v', 'w', 'y' };
 
-typedef struct Rasterization
+typedef struct Glyph
 {
     FT_Bitmap bitmap;
     FT_Int left_bearing;
     FT_Int top_bearing;
     FT_Pos advance;
-} Rasterization;
+} Glyph;
 
 FT_Library g_freetype_library;
-FT_Face g_face;
+FT_Face g_text_face;
+FT_Face g_icon_face;
 
 typedef struct Button
 {
@@ -122,12 +123,12 @@ typedef union DialogControlCount
 
 typedef enum PieceType
 {
-    PIECE_ROOK,
-    PIECE_KNIGHT,
     PIECE_BISHOP,
-    PIECE_QUEEN,
-    PIECE_PAWN,
     PIECE_KING,
+    PIECE_KNIGHT,
+    PIECE_QUEEN,
+    PIECE_ROOK,
+    PIECE_PAWN,
     PIECE_TYPE_COUNT
 } PieceType; 
 
@@ -192,16 +193,24 @@ typedef union Color
     uint32_t value;
 } Color;
 
-typedef struct CircleRasterization
+typedef struct Grey
+{
+    uint8_t grey;
+    uint8_t alpha;
+} Grey;
+
+typedef struct Circle
 {
     uint8_t*alpha;
     uint32_t radius;
-} CircleRasterization;
+} Circle;
 
 typedef struct DPIData
 {
-    CircleRasterization circle_rasterizations[3];
-    Rasterization rasterizations['y' - ' ' + 1];
+    Circle circles[3];
+    Glyph glyphs['y' - ' ' + 1];
+    Grey*icons;
+    uint32_t square_size;
     uint32_t control_border_thickness;
     uint32_t text_line_height;
     uint32_t text_control_height;
@@ -216,7 +225,7 @@ typedef struct Window
     Color*pixels;
     Control*controls;
     DPIData*dpi_data;
-    uint8_t*circle_rasterizations[3];
+    uint8_t*circles[3];
     size_t pixel_buffer_capacity;
     uint32_t width;
     uint32_t height;
@@ -234,13 +243,9 @@ typedef enum WindowIndex
     WINDOW_COUNT = 2
 } WindowIndex;
 
-#define COLUMNS_PER_ICON 60
-#define PIXELS_PER_ICON COLUMNS_PER_ICON * COLUMNS_PER_ICON
-
 Position*g_position_pool;
 BoardStateNode*g_state_buckets;
 uint16_t*g_selected_move_index;
-Color g_icon_bitmaps[2][PIECE_TYPE_COUNT][PIXELS_PER_ICON];
 Control g_dialog_controls[sizeof(DialogControlCount)];
 Control g_main_window_controls[MAIN_WINDOW_CONTROL_COUNT];
 Window g_windows[WINDOW_COUNT];
@@ -248,7 +253,6 @@ DPIData g_dpi_datas[WINDOW_COUNT];
 uint64_t g_times_left_as_of_last_move[2];
 uint64_t g_last_move_time;
 uint64_t g_time_increment;
-uint32_t g_square_size;
 uint32_t g_font_size;
 uint16_t g_seconds_left[2];
 uint16_t g_current_position_index;
@@ -1034,43 +1038,68 @@ void get_moves(uint16_t position_index)
         }
         switch (piece.piece_type)
         {
-        case PIECE_PAWN:
-        {
-            int8_t forward_delta = FORWARD_DELTA(position->active_player_index);
-            uint8_t file = FILE(piece.square_index);
-            if (file)
-            {
-                add_diagonal_pawn_move(position_index, piece_index, file - 1);
-            }
-            if (file < 7)
-            {
-                add_diagonal_pawn_move(position_index, piece_index, file + 1);
-            }
-            uint8_t destination_square_index = piece.square_index + forward_delta * FILE_COUNT;
-            if (position->squares[destination_square_index] == NULL_PIECE)
-            {
-                uint16_t move_index = copy_position(position_index);
-                Position*move = GET_POSITION(move_index);
-                move_piece_to_square(move, piece_index, destination_square_index);
-                move->reset_draw_by_50_count = true;
-                destination_square_index += forward_delta * FILE_COUNT;
-                add_forward_pawn_move_with_promotions(position_index, move_index,
-                    piece_index);
-                if (!piece.has_moved && position->squares[destination_square_index] == NULL_PIECE)
-                {
-                    move_index = copy_position(position_index);
-                    move = GET_POSITION(move_index);
-                    move_piece_to_square(move, piece_index, destination_square_index);
-                    move->reset_draw_by_50_count = true;
-                    move->en_passant_file = file;
-                    add_move_if_not_king_hang(position_index, move_index);
-                }
-            }
-            break;
-        }
         case PIECE_BISHOP:
         {
             add_diagonal_moves(position_index, piece_index);
+            break;
+        }
+        case PIECE_KING:
+        {
+            uint8_t a_rook_index = player_pieces_index + A_ROOK_INDEX;
+            uint8_t h_rook_index = player_pieces_index + H_ROOK_INDEX;
+            bool loses_castling_rights = !piece.has_moved && 
+                (!position->pieces[a_rook_index].has_moved ||
+                    !position->pieces[h_rook_index].has_moved);
+            uint8_t move_ranks[3];
+            size_t move_rank_count =
+                add_king_move_ranks_or_files(move_ranks, RANK(piece.square_index));
+            uint8_t move_files[3];
+            size_t move_file_count =
+                add_king_move_ranks_or_files(move_files, FILE(piece.square_index));
+            for (size_t rank_index = 0; rank_index < move_rank_count; ++rank_index)
+            {
+                for (size_t file_index = 0; file_index < move_file_count; ++file_index)
+                {
+                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
+                        SQUARE_INDEX(move_ranks[rank_index], move_files[file_index]));
+                    if (move)
+                    {
+                        move->reset_draw_by_50_count |= loses_castling_rights;
+                    }
+                }
+            }
+            if (!piece.has_moved &&
+                !player_attacks_king_square(position, !position->active_player_index,
+                    piece.square_index))
+            {
+                if (!position->pieces[a_rook_index].has_moved &&
+                    position->squares[piece.square_index - 1] == NULL_PIECE &&
+                    position->squares[piece.square_index - 2] == NULL_PIECE &&
+                    position->squares[piece.square_index - 3] == NULL_PIECE &&
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index - 1) &&
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index - 2))
+                {
+                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
+                        piece.square_index - 2);
+                    move->reset_draw_by_50_count = true;
+                    move_piece_to_square(move, a_rook_index, piece.square_index - 1);
+                }
+                if (!position->pieces[h_rook_index].has_moved &&
+                    position->squares[piece.square_index + 1] == NULL_PIECE &&
+                    position->squares[piece.square_index + 2] == NULL_PIECE &&
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index + 1) &&
+                    !player_attacks_king_square(position, !position->active_player_index,
+                        piece.square_index + 2))
+                {
+                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
+                        piece.square_index + 2);
+                    move->reset_draw_by_50_count = true;
+                    move_piece_to_square(move, h_rook_index, piece.square_index + 1);
+                }
+            }
             break;
         }
         case PIECE_KNIGHT:
@@ -1132,10 +1161,38 @@ void get_moves(uint16_t position_index)
             }
             break;
         }
-        case PIECE_ROOK:
+        case PIECE_PAWN:
         {
-            add_moves_along_axes(position_index, piece_index, !piece.has_moved &&
-                !position->pieces[(position->active_player_index << 4) + KING_INDEX].has_moved);
+            int8_t forward_delta = FORWARD_DELTA(position->active_player_index);
+            uint8_t file = FILE(piece.square_index);
+            if (file)
+            {
+                add_diagonal_pawn_move(position_index, piece_index, file - 1);
+            }
+            if (file < 7)
+            {
+                add_diagonal_pawn_move(position_index, piece_index, file + 1);
+            }
+            uint8_t destination_square_index = piece.square_index + forward_delta * FILE_COUNT;
+            if (position->squares[destination_square_index] == NULL_PIECE)
+            {
+                uint16_t move_index = copy_position(position_index);
+                Position*move = GET_POSITION(move_index);
+                move_piece_to_square(move, piece_index, destination_square_index);
+                move->reset_draw_by_50_count = true;
+                destination_square_index += forward_delta * FILE_COUNT;
+                add_forward_pawn_move_with_promotions(position_index, move_index,
+                    piece_index);
+                if (!piece.has_moved && position->squares[destination_square_index] == NULL_PIECE)
+                {
+                    move_index = copy_position(position_index);
+                    move = GET_POSITION(move_index);
+                    move_piece_to_square(move, piece_index, destination_square_index);
+                    move->reset_draw_by_50_count = true;
+                    move->en_passant_file = file;
+                    add_move_if_not_king_hang(position_index, move_index);
+                }
+            }
             break;
         }
         case PIECE_QUEEN:
@@ -1144,63 +1201,10 @@ void get_moves(uint16_t position_index)
             add_moves_along_axes(position_index, piece_index, false);
             break;
         }
-        case PIECE_KING:
+        case PIECE_ROOK:
         {
-            uint8_t a_rook_index = player_pieces_index + A_ROOK_INDEX;
-            uint8_t h_rook_index = player_pieces_index + H_ROOK_INDEX;
-            bool loses_castling_rights = !piece.has_moved && 
-                (!position->pieces[a_rook_index].has_moved ||
-                    !position->pieces[h_rook_index].has_moved);
-            uint8_t move_ranks[3];
-            size_t move_rank_count =
-                add_king_move_ranks_or_files(move_ranks, RANK(piece.square_index));
-            uint8_t move_files[3];
-            size_t move_file_count =
-                add_king_move_ranks_or_files(move_files, FILE(piece.square_index));
-            for (size_t rank_index = 0; rank_index < move_rank_count; ++rank_index)
-            {
-                for (size_t file_index = 0; file_index < move_file_count; ++file_index)
-                {
-                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
-                        SQUARE_INDEX(move_ranks[rank_index], move_files[file_index]));
-                    if (move)
-                    {
-                        move->reset_draw_by_50_count |= loses_castling_rights;
-                    }
-                }
-            }
-            if (!piece.has_moved &&
-                !player_attacks_king_square(position, !position->active_player_index,
-                    piece.square_index))
-            {
-                if (!position->pieces[a_rook_index].has_moved &&
-                    position->squares[piece.square_index - 1] == NULL_PIECE &&
-                    position->squares[piece.square_index - 2] == NULL_PIECE &&
-                    position->squares[piece.square_index - 3] == NULL_PIECE &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index - 1) &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index - 2))
-                {
-                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
-                        piece.square_index - 2);
-                    move->reset_draw_by_50_count = true;
-                    move_piece_to_square(move, a_rook_index, piece.square_index - 1);
-                }
-                if (!position->pieces[h_rook_index].has_moved &&
-                    position->squares[piece.square_index + 1] == NULL_PIECE &&
-                    position->squares[piece.square_index + 2] == NULL_PIECE &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index + 1) &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index + 2))
-                {
-                    Position*move = move_piece_and_add_as_move(position_index, piece_index,
-                        piece.square_index + 2);
-                    move->reset_draw_by_50_count = true;
-                    move_piece_to_square(move, h_rook_index, piece.square_index + 1);
-                }
-            }
+            add_moves_along_axes(position_index, piece_index, !piece.has_moved &&
+                !position->pieces[(position->active_player_index << 4) + KING_INDEX].has_moved);
         }
         }
     }
@@ -1361,20 +1365,6 @@ bool point_is_in_rect(int32_t x, int32_t y, int32_t min_x, int32_t min_y, uint32
     return x >= min_x && y >= min_y && x < min_x + width && y < min_y + height;
 }
 
-uint8_t id_of_square_cursor_is_over(Control*board, int32_t cursor_x, int32_t cursor_y)
-{
-    if (cursor_x >= board->board.min_x && cursor_y >= board->board.min_y)
-    {
-        uint8_t rank = (cursor_y - board->board.min_y) / COLUMNS_PER_ICON;
-        uint8_t file = (cursor_x - board->board.min_x) / COLUMNS_PER_ICON;
-        if (rank < RANK_COUNT && file < FILE_COUNT)
-        {
-            return board->base_id + SQUARE_INDEX(rank, file);
-        }
-    }
-    return NULL_CONTROL;
-}
-
 #define ROUND26_6_TO_PIXEL(subpixel) (((subpixel) + 32) >> 6)
 
 uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cursor_y)
@@ -1386,10 +1376,14 @@ uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cu
         {
         case CONTROL_BOARD:
         {
-            uint8_t id = id_of_square_cursor_is_over(control, cursor_x, cursor_y);
-            if (id != NULL_CONTROL)
+            if (cursor_x >= control->board.min_x && cursor_y >= control->board.min_y)
             {
-                return id;
+                uint8_t rank = (cursor_y - control->board.min_y) / window->dpi_data->square_size;
+                uint8_t file = (cursor_x - control->board.min_x) / window->dpi_data->square_size;
+                if (rank < RANK_COUNT && file < FILE_COUNT)
+                {
+                    return control->base_id + SQUARE_INDEX(rank, file);
+                }
             }
             break;
         }
@@ -1405,24 +1399,22 @@ uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cu
         case CONTROL_PROMOTION_SELECTOR:
         {
             if (point_is_in_rect(cursor_x, cursor_y, control->promotion_selector.min_x, 0,
-                4 * COLUMNS_PER_ICON, COLUMNS_PER_ICON))
+                4 * window->dpi_data->square_size, window->dpi_data->square_size))
             {
                 return control->base_id +
-                    (cursor_x - control->promotion_selector.min_x) / COLUMNS_PER_ICON;
+                    (cursor_x - control->promotion_selector.min_x) / window->dpi_data->square_size;
             }
             break;
         }
         case CONTROL_RADIO:
         {
-            int32_t cursor_x_in_circle = cursor_x +
-                window->dpi_data->circle_rasterizations[1].radius -
-                (control->radio.min_x + window->dpi_data->circle_rasterizations[2].radius);
-            int32_t diameter = 2 * window->dpi_data->circle_rasterizations[1].radius;
+            int32_t cursor_x_in_circle = cursor_x + window->dpi_data->circles[1].radius -
+                (control->radio.min_x + window->dpi_data->circles[2].radius);
+            int32_t diameter = 2 * window->dpi_data->circles[1].radius;
             if (cursor_x_in_circle >= 0 && cursor_x_in_circle < diameter)
             {
-                int32_t cursor_y_in_circle = cursor_y +
-                    window->dpi_data->circle_rasterizations[2].radius +
-                    window->dpi_data->circle_rasterizations[1].radius -
+                int32_t cursor_y_in_circle = cursor_y + window->dpi_data->circles[2].radius +
+                    window->dpi_data->circles[1].radius -
                     (control->radio.label_baseline_y + window->dpi_data->text_line_height);
                 for (size_t option_index = 0;
                     option_index < ARRAY_COUNT(g_radio_labels); ++option_index)
@@ -1431,8 +1423,7 @@ uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cu
                     {
                         break;
                     }
-                    if (cursor_y_in_circle < diameter &&
-                        window->dpi_data->circle_rasterizations[option_index].
+                    if (cursor_y_in_circle < diameter && window->dpi_data->circles[option_index].
                         alpha[cursor_y_in_circle * diameter + cursor_x_in_circle])
                     {
                         return control->base_id + option_index;
@@ -1460,7 +1451,7 @@ uint8_t id_of_control_cursor_is_over(Window*window, int32_t cursor_x, int32_t cu
                 if (digit_input->is_before_colon)
                 {
                     digit_input_min_x += window->dpi_data->control_border_thickness +
-                        2 * ROUND26_6_TO_PIXEL(window->dpi_data->rasterizations
+                        2 * ROUND26_6_TO_PIXEL(window->dpi_data->glyphs
                             [':' - g_codepoints[0]].advance);
                 }
             }
@@ -1787,29 +1778,31 @@ void draw_rectangle_border(Window*window, int32_t min_x, int32_t min_y, uint32_t
         g_black);
 }
 
-void draw_icon(Color*icon_bitmap, Window*window, int32_t min_x, int32_t min_y)
+void draw_icon(Window*window, int32_t min_x, int32_t min_y, uint8_t player_index,
+    uint8_t piece_type)
 {
-    int32_t max_x_in_bitmap = min32(COLUMNS_PER_ICON, window->width - min_x);
-    int32_t max_y_in_bitmap = min32(COLUMNS_PER_ICON, window->height - min_y);
-    Color*bitmap_row_min_x_in_window = window->pixels + min_y * window->width + min_x;
-    icon_bitmap += PIXELS_PER_ICON;
-    for (int32_t y_in_bitmap = 0; y_in_bitmap < max_y_in_bitmap; ++y_in_bitmap)
+    size_t pixels_per_icon = window->dpi_data->square_size * window->dpi_data->square_size;
+    Grey*icon =
+        window->dpi_data->icons + (player_index * PIECE_TYPE_COUNT + piece_type) * pixels_per_icon;
+    int32_t max_x_in_icon = min32(window->dpi_data->square_size, window->width - min_x);
+    int32_t max_y_in_icon = min32(window->dpi_data->square_size, window->height - min_y);
+    Color*icon_row_min_x_in_window = window->pixels + min_y * window->width + min_x;
+    icon += pixels_per_icon;
+    for (int32_t y_in_icon = 0; y_in_icon < max_y_in_icon; ++y_in_icon)
     {
-        icon_bitmap -= COLUMNS_PER_ICON;
-        for (int32_t x_in_bitmap = 0; x_in_bitmap < max_x_in_bitmap; ++x_in_bitmap)
+        icon -= window->dpi_data->square_size;
+        for (int32_t x_in_icon = 0; x_in_icon < max_x_in_icon; ++x_in_icon)
         {
-            Color*window_pixel = bitmap_row_min_x_in_window + x_in_bitmap;
-            Color bitmap_pixel = icon_bitmap[x_in_bitmap];
-            uint32_t lerp_term = (255 - bitmap_pixel.alpha) * window_pixel->alpha;
-            window_pixel->red = (bitmap_pixel.red * bitmap_pixel.alpha) / 255 +
-                (lerp_term * window_pixel->red) / 65025;
-            window_pixel->green = (bitmap_pixel.green * bitmap_pixel.alpha) / 255 +
-                (lerp_term * window_pixel->green) / 65025;
-            window_pixel->blue = (bitmap_pixel.blue * bitmap_pixel.alpha) / 255 +
-                (lerp_term * window_pixel->blue) / 65025;
-            window_pixel->alpha = bitmap_pixel.alpha + lerp_term / 255;
+            Color*window_pixel = icon_row_min_x_in_window + x_in_icon;
+            Grey icon_pixel = icon[x_in_icon];
+            uint32_t lerp_term = (255 - icon_pixel.alpha) * window_pixel->alpha;
+            uint32_t icon_term = (icon_pixel.grey * icon_pixel.alpha) / 255;
+            window_pixel->red = icon_term + (lerp_term * window_pixel->red) / 65025;
+            window_pixel->green = icon_term + (lerp_term * window_pixel->green) / 65025;
+            window_pixel->blue = icon_term + (lerp_term * window_pixel->blue) / 65025;
+            window_pixel->alpha = icon_pixel.alpha + lerp_term / 255;
         }
-        bitmap_row_min_x_in_window += window->width;
+        icon_row_min_x_in_window += window->width;
     }
 }
 
@@ -1851,6 +1844,45 @@ void fill_circle_row_pair(uint8_t*center, int32_t diameter, int32_t max_x, int32
     fill_circle_row_pair_interiors(center, diameter, max_x, lower_row_y);
 }
 
+void rasterize_piece_icon(DPIData*dpi_data, size_t icon_index, int32_t baseline_offset,
+    uint8_t background_grey, uint8_t foreground_grey)
+{
+    FT_Load_Glyph(g_icon_face, 2 * icon_index + 1, FT_LOAD_RENDER);
+    Grey*icon = dpi_data->icons + (icon_index + 1) * dpi_data->square_size * dpi_data->square_size;
+    Grey*glyph_row_min_x_in_icon = icon + g_icon_face->glyph->bitmap_left -
+        (baseline_offset - g_icon_face->glyph->bitmap_top) * dpi_data->square_size;
+    uint8_t*glyph_row = g_icon_face->glyph->bitmap.buffer;
+    for (int32_t y_in_glyph = 0; y_in_glyph < g_icon_face->glyph->bitmap.rows; ++y_in_glyph)
+    {
+        glyph_row_min_x_in_icon -= dpi_data->square_size;
+        for (int32_t x_in_glyph = 0; x_in_glyph < g_icon_face->glyph->bitmap.width; ++x_in_glyph)
+        {
+            Grey*icon_pixel = glyph_row_min_x_in_icon + x_in_glyph;
+            icon_pixel->grey = background_grey;
+            icon_pixel->alpha = glyph_row[x_in_glyph];
+        }
+        glyph_row += g_icon_face->glyph->bitmap.width;
+    }
+    FT_Load_Glyph(g_icon_face, 2 * icon_index + 2, FT_LOAD_RENDER);
+    glyph_row_min_x_in_icon = icon + g_icon_face->glyph->bitmap_left -
+        (baseline_offset - g_icon_face->glyph->bitmap_top) * dpi_data->square_size;
+    glyph_row = g_icon_face->glyph->bitmap.buffer;
+    for (int32_t y_in_glyph = 0; y_in_glyph < g_icon_face->glyph->bitmap.rows; ++y_in_glyph)
+    {
+        glyph_row_min_x_in_icon -= dpi_data->square_size;
+        for (int32_t x_in_glyph = 0; x_in_glyph < g_icon_face->glyph->bitmap.width; ++x_in_glyph)
+        {
+            Grey*icon_pixel = glyph_row_min_x_in_icon + x_in_glyph;
+            uint32_t alpha = glyph_row[x_in_glyph];
+            uint32_t lerp_term = (255 - alpha) * icon_pixel->alpha;
+            icon_pixel->grey =
+                (foreground_grey * alpha) / 255 + (lerp_term * icon_pixel->grey) / 65025;
+            icon_pixel->alpha = alpha + lerp_term / 255;
+        }
+        glyph_row += g_icon_face->glyph->bitmap.width;
+    }
+}
+
 void set_dpi_data(Window*window, uint16_t dpi)
 {
     for (size_t i = 0; i < ARRAY_COUNT(g_dpi_datas); ++i)
@@ -1870,29 +1902,38 @@ void set_dpi_data(Window*window, uint16_t dpi)
             window->dpi_data = dpi_data;
         }
     }
-    g_square_size = COLUMNS_PER_ICON;
     ++window->dpi_data->reference_count;
     window->dpi_data->dpi = dpi;
-    FT_Set_Char_Size(g_face, 0, g_font_size, 0, dpi);
-    FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, '|'), FT_LOAD_DEFAULT);
-    window->dpi_data->control_border_thickness = g_face->glyph->bitmap.pitch;
+    FT_Set_Char_Size(g_icon_face, 0, 4 * g_font_size, 0, dpi);
+    FT_Set_Char_Size(g_text_face, 0, g_font_size, 0, dpi);
+    FT_Load_Glyph(g_text_face, FT_Get_Char_Index(g_text_face, '|'), FT_LOAD_DEFAULT);
+    window->dpi_data->control_border_thickness = g_text_face->glyph->bitmap.pitch;
     size_t rasterization_memory_size = 0;
-    for (size_t i = 0; i < ARRAY_COUNT(window->dpi_data->circle_rasterizations); ++i)
+    for (size_t i = 0; i < ARRAY_COUNT(window->dpi_data->circles); ++i)
     {
-        CircleRasterization*circle_rasterization = window->dpi_data->circle_rasterizations + i;
-        circle_rasterization->radius = (i + 1) * window->dpi_data->control_border_thickness;
-        int32_t diameter = 2 * circle_rasterization->radius;
+        Circle*circle = window->dpi_data->circles + i;
+        circle->radius = (i + 1) * window->dpi_data->control_border_thickness;
+        int32_t diameter = 2 * circle->radius;
         rasterization_memory_size += diameter * diameter;
     }
+    FT_Load_Glyph(g_icon_face, 9, FT_LOAD_DEFAULT);
+    window->dpi_data->square_size = ROUND26_6_TO_PIXEL(g_icon_face->glyph->metrics.horiAdvance);
+    uint32_t square_size = ROUND26_6_TO_PIXEL(g_icon_face->glyph->metrics.horiAdvance);
+    int32_t icon_baseline_offset = g_icon_face->glyph->bitmap_top +
+        (window->dpi_data->square_size - g_icon_face->glyph->bitmap.rows) / 2;
+    size_t pixels_per_icon = window->dpi_data->square_size * window->dpi_data->square_size;
+    rasterization_memory_size += 12 * pixels_per_icon * sizeof(Grey);
     for (size_t i = 0; i < ARRAY_COUNT(g_codepoints); ++i)
     {
-        FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, g_codepoints[i]), FT_LOAD_DEFAULT);
-        rasterization_memory_size += g_face->glyph->bitmap.rows * g_face->glyph->bitmap.pitch;
+        FT_Load_Glyph(g_text_face, FT_Get_Char_Index(g_text_face, g_codepoints[i]),
+            FT_LOAD_DEFAULT);
+        rasterization_memory_size +=
+            g_text_face->glyph->bitmap.rows * g_text_face->glyph->bitmap.pitch;
     }
     void*rasterization_memory = RESERVE_AND_COMMIT_MEMORY(rasterization_memory_size);
-    for (size_t i = 0; i < ARRAY_COUNT(window->dpi_data->circle_rasterizations); ++i)
+    for (size_t i = 0; i < ARRAY_COUNT(window->dpi_data->circles); ++i)
     {
-        CircleRasterization*circle_rasterization = window->dpi_data->circle_rasterizations + i;
+        Circle*circle_rasterization = window->dpi_data->circles + i;
         circle_rasterization->alpha = rasterization_memory;
         uint32_t diameter = 2 * circle_rasterization->radius;
         rasterization_memory = (void*)((uintptr_t)rasterization_memory + diameter * diameter);
@@ -1940,32 +1981,43 @@ void set_dpi_data(Window*window, uint16_t dpi)
             y = next_y;
         }
     }
+    window->dpi_data->icons = rasterization_memory;
+    for (size_t icon_index = 0; icon_index < 6; ++icon_index)
+    {
+        rasterize_piece_icon(window->dpi_data, icon_index, icon_baseline_offset, 255, 0);
+    }
+    for (size_t icon_index = 6; icon_index < 12; ++icon_index)
+    {
+        rasterize_piece_icon(window->dpi_data, icon_index, icon_baseline_offset, 0, 255);
+    }
+    rasterization_memory =
+        (void*)((uintptr_t)rasterization_memory + 12 * pixels_per_icon * sizeof(Grey));
     for (size_t i = 0; i < ARRAY_COUNT(g_codepoints); ++i)
     {
         char codepoint = g_codepoints[i];
-        FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, codepoint), FT_LOAD_RENDER);
-        Rasterization*rasterization =
-            window->dpi_data->rasterizations + codepoint - g_codepoints[0];
-        rasterization->bitmap = g_face->glyph->bitmap;
+        FT_Load_Glyph(g_text_face, FT_Get_Char_Index(g_text_face, codepoint), FT_LOAD_RENDER);
+        Glyph*rasterization = window->dpi_data->glyphs + codepoint - g_codepoints[0];
+        rasterization->bitmap = g_text_face->glyph->bitmap;
         rasterization->bitmap.buffer = rasterization_memory;
-        size_t rasterization_size = g_face->glyph->bitmap.rows * g_face->glyph->bitmap.pitch;
-        memcpy(rasterization->bitmap.buffer, g_face->glyph->bitmap.buffer, rasterization_size);
-        rasterization->left_bearing = g_face->glyph->bitmap_left;
-        rasterization->top_bearing = g_face->glyph->bitmap_top;
-        rasterization->advance = g_face->glyph->metrics.horiAdvance;
+        size_t rasterization_size =
+            g_text_face->glyph->bitmap.rows * g_text_face->glyph->bitmap.pitch;
+        memcpy(rasterization->bitmap.buffer, g_text_face->glyph->bitmap.buffer, rasterization_size);
+        rasterization->left_bearing = g_text_face->glyph->bitmap_left;
+        rasterization->top_bearing = g_text_face->glyph->bitmap_top;
+        rasterization->advance = g_text_face->glyph->metrics.horiAdvance;
         rasterization_memory = (void*)((uintptr_t)rasterization_memory + rasterization_size);
     }
-    window->dpi_data->text_line_height = ROUND26_6_TO_PIXEL(g_face->size->metrics.height);
-    window->dpi_data->text_control_height  =
-        ROUND26_6_TO_PIXEL(g_face->size->metrics.ascender - 2 * g_face->size->metrics.descender);
-    FT_Load_Glyph(g_face, FT_Get_Char_Index(g_face, 'M'), FT_LOAD_DEFAULT);
+    window->dpi_data->text_line_height = ROUND26_6_TO_PIXEL(g_text_face->size->metrics.height);
+    window->dpi_data->text_control_height = ROUND26_6_TO_PIXEL(g_text_face->size->metrics.ascender -
+        2 * g_text_face->size->metrics.descender);
+    FT_Load_Glyph(g_text_face, FT_Get_Char_Index(g_text_face, 'M'), FT_LOAD_DEFAULT);
     window->dpi_data->text_control_padding =
-        window->dpi_data->text_control_height - g_face->glyph->bitmap.rows / 2;
+        window->dpi_data->text_control_height - g_text_face->glyph->bitmap.rows / 2;
     window->dpi_data->digit_input_width = 0;
     for (char digit = '0'; digit <= '9'; ++digit)
     {
         window->dpi_data->digit_input_width = max32(window->dpi_data->digit_input_width,
-            window->dpi_data->rasterizations[digit - g_codepoints[0]].bitmap.width);
+            window->dpi_data->glyphs[digit - g_codepoints[0]].bitmap.width);
     }
     window->dpi_data->digit_input_width *= 2;
 }
@@ -1975,19 +2027,19 @@ void free_dpi_data(Window*window)
     --window->dpi_data->reference_count;
     if (!window->dpi_data->reference_count)
     {
-        FREE_MEMORY(window->dpi_data->rasterizations);
+        FREE_MEMORY(window->dpi_data->circles);
     }
 }
 
-uint32_t get_string_length(Rasterization*rasterizations, char*string)
+uint32_t get_string_length(Glyph*rasterizations, char*string)
 {
     FT_Pos out = 0;
     FT_UInt previous_glyph_index = 0;
     while (*string)
     {
-        FT_UInt glyph_index = FT_Get_Char_Index(g_face, *string);
+        FT_UInt glyph_index = FT_Get_Char_Index(g_text_face, *string);
         FT_Vector kerning_with_previous_glyph;
-        FT_Get_Kerning(g_face, previous_glyph_index, glyph_index, FT_KERNING_DEFAULT,
+        FT_Get_Kerning(g_text_face, previous_glyph_index, glyph_index, FT_KERNING_DEFAULT,
             &kerning_with_previous_glyph);
         out += kerning_with_previous_glyph.x + rasterizations[*string - g_codepoints[0]].advance;
         previous_glyph_index = glyph_index;
@@ -1996,8 +2048,8 @@ uint32_t get_string_length(Rasterization*rasterizations, char*string)
     return ROUND26_6_TO_PIXEL(out);
 }
 
-void draw_rasterization(Window*window, Rasterization*rasterization, int32_t origin_x,
-    int32_t origin_y, Color color)
+void draw_rasterization(Window*window, Glyph*rasterization, int32_t origin_x, int32_t origin_y,
+    Color color)
 {
     int32_t min_x_in_window = origin_x + rasterization->left_bearing;
     int32_t min_y_in_window = origin_y - rasterization->top_bearing;
@@ -2031,12 +2083,12 @@ void draw_string(Window*window, char*string, int32_t origin_x, int32_t origin_y,
     FT_UInt previous_glyph_index = 0;
     while (*string)
     {
-        FT_UInt glyph_index = FT_Get_Char_Index(g_face, *string);
+        FT_UInt glyph_index = FT_Get_Char_Index(g_text_face, *string);
         FT_Vector kerning_with_previous_glyph;
-        FT_Get_Kerning(g_face, previous_glyph_index, glyph_index, FT_KERNING_DEFAULT,
+        FT_Get_Kerning(g_text_face, previous_glyph_index, glyph_index, FT_KERNING_DEFAULT,
             &kerning_with_previous_glyph);
         advance += kerning_with_previous_glyph.x;
-        Rasterization*rasterization = window->dpi_data->rasterizations + *string - g_codepoints[0];
+        Glyph*rasterization = window->dpi_data->glyphs + *string - g_codepoints[0];
         draw_rasterization(window, rasterization, ROUND26_6_TO_PIXEL(advance), origin_y, color);
         advance += rasterization->advance;
         previous_glyph_index = glyph_index;
@@ -2044,8 +2096,7 @@ void draw_string(Window*window, char*string, int32_t origin_x, int32_t origin_y,
     }
 }
 
-void draw_circle(Window*window, CircleRasterization*rasterization, int32_t min_x,
-    int32_t center_y, Color color)
+void draw_circle(Window*window, Circle*rasterization, int32_t min_x, int32_t center_y, Color color)
 {
     int32_t diameter = 2 * rasterization->radius;
     int32_t max_x_in_bitmap = min32(diameter, window->width - min_x);
@@ -2093,8 +2144,9 @@ void color_square_with_index(Window*window, Board*board, Color tint, uint8_t squ
         {
             color = tint;
         }
-        draw_rectangle(window, board->min_x + g_square_size * file,
-            board->min_y + g_square_size * rank, g_square_size, g_square_size, color);
+        draw_rectangle(window, board->min_x + window->dpi_data->square_size * file,
+            board->min_y + window->dpi_data->square_size * rank, window->dpi_data->square_size,
+            window->dpi_data->square_size, color);
     }
 }
 
@@ -2105,8 +2157,8 @@ void draw_button(Window*window, Button*button, Color cell_color, Color label_col
     draw_rectangle_border(window, button->min_x, button->min_y, button->width,
         window->dpi_data->text_control_height);
     draw_string(window, button->label,
-        button->min_x + (button->width -
-            get_string_length(window->dpi_data->rasterizations, button->label)) / 2,
+        button->min_x +
+            (button->width - get_string_length(window->dpi_data->glyphs, button->label)) / 2,
         button->min_y + window->dpi_data->text_line_height, label_color);
 }
 
@@ -2155,19 +2207,17 @@ void draw_controls(Window*window)
             draw_string(window, "Color to play as:", control->radio.min_x,
                 control->radio.label_baseline_y, g_black);
             int32_t option_label_x = control->radio.min_x + window->dpi_data->text_control_padding +
-                2 * window->dpi_data->circle_rasterizations[2].radius;
+                2 * window->dpi_data->circles[2].radius;
             int32_t white_circle_center_x = control->radio.min_x +
-                window->dpi_data->circle_rasterizations[2].radius -
-                window->dpi_data->circle_rasterizations[1].radius;
+                window->dpi_data->circles[2].radius - window->dpi_data->circles[1].radius;
             int32_t option_baseline_y = control->radio.label_baseline_y;
             for (size_t option_index = 0; option_index < ARRAY_COUNT(g_radio_labels);
                 ++option_index)
             {
                 option_baseline_y += window->dpi_data->text_line_height;
-                int32_t circle_center_y =
-                    option_baseline_y - window->dpi_data->circle_rasterizations[2].radius;
-                draw_circle(window, window->dpi_data->circle_rasterizations + 2,
-                    control->radio.min_x, circle_center_y, g_black);
+                int32_t circle_center_y = option_baseline_y - window->dpi_data->circles[2].radius;
+                draw_circle(window, window->dpi_data->circles + 2, control->radio.min_x, 
+                   circle_center_y, g_black);
                 uint8_t option_id = control->base_id + option_index;
                 Color color;
                 if (window->clicked_control_id == option_id)
@@ -2182,13 +2232,13 @@ void draw_controls(Window*window)
                 {
                     color = g_white;
                 }
-                draw_circle(window, window->dpi_data->circle_rasterizations + 1,
-                    white_circle_center_x, circle_center_y, color);
+                draw_circle(window, window->dpi_data->circles + 1, white_circle_center_x,
+                    circle_center_y, color);
                 if (option_index != g_engine_player_index)
                 {
-                    draw_circle(window, window->dpi_data->circle_rasterizations,
-                        control->radio.min_x + window->dpi_data->circle_rasterizations[2].radius -
-                            window->dpi_data->circle_rasterizations[0].radius,
+                    draw_circle(window, window->dpi_data->circles,
+                        control->radio.min_x + window->dpi_data->circles[2].radius -
+                            window->dpi_data->circles[0].radius,
                         circle_center_y, g_black);
                 }
                 draw_string(window, g_radio_labels[option_index], option_label_x, option_baseline_y,
@@ -2238,8 +2288,8 @@ void draw_controls(Window*window)
                 {
                     digit_color = g_black;
                 }
-                Rasterization*rasterization =
-                    window->dpi_data->rasterizations + digit_input->digit + '0' - g_codepoints[0];
+                Glyph*rasterization =
+                    window->dpi_data->glyphs + digit_input->digit + '0' - g_codepoints[0];
                 draw_rasterization(window, rasterization, digit_input_min_x +
                     (window->dpi_data->digit_input_width - rasterization->bitmap.width) / 2,
                     text_min_y, digit_color);
@@ -2247,7 +2297,7 @@ void draw_controls(Window*window)
                     window->dpi_data->control_border_thickness;
                 if (digit_input->is_before_colon)
                 {
-                    Rasterization*colon = window->dpi_data->rasterizations + ':' - g_codepoints[0];
+                    Glyph*colon = window->dpi_data->glyphs + ':' - g_codepoints[0];
                     uint32_t colon_space = 2 * ROUND26_6_TO_PIXEL(colon->advance);
                     draw_rasterization(window, colon, 
                         digit_input_min_x + (colon_space - colon->bitmap.width) / 2, text_min_y,
@@ -2406,186 +2456,180 @@ bool setup_window_handle_key_down(Window*window, uint8_t digit)
 
 void set_setup_window_dpi(uint16_t dpi)
 {
-    Window*setup_window = g_windows + WINDOW_SETUP;
-    set_dpi_data(setup_window, dpi);
-    RadioButtons*player_color = &setup_window->controls[SETUP_WINDOW_PLAYER_COLOR].radio;
-    player_color->min_x = setup_window->dpi_data->text_control_height;
-    TimeInput*time = &setup_window->controls[SETUP_WINDOW_TIME].time_input;
-    time->min_x = setup_window->dpi_data->control_border_thickness +
-        setup_window->dpi_data->text_control_height;
-    TimeInput*increment = &setup_window->controls[SETUP_WINDOW_INCREMENT].time_input;
+    Window*window = g_windows + WINDOW_SETUP;
+    set_dpi_data(window, dpi);
+    RadioButtons*player_color = &window->controls[SETUP_WINDOW_PLAYER_COLOR].radio;
+    player_color->min_x = window->dpi_data->text_control_height;
+    TimeInput*time = &window->controls[SETUP_WINDOW_TIME].time_input;
+    time->min_x =
+        window->dpi_data->control_border_thickness + window->dpi_data->text_control_height;
+    TimeInput*increment = &window->controls[SETUP_WINDOW_INCREMENT].time_input;
     increment->min_x = time->min_x;
-    Button*start_game_button = &setup_window->controls[SETUP_WINDOW_START_GAME].button;
+    Button*start_game_button = &window->controls[SETUP_WINDOW_START_GAME].button;
     start_game_button->min_x = time->min_x;
-    start_game_button->width = max32(max32(5 * setup_window->dpi_data->digit_input_width +
-        4 * ROUND26_6_TO_PIXEL(setup_window->dpi_data->
-            rasterizations[':' - g_codepoints[0]].advance) +
-        6 * setup_window->dpi_data->control_border_thickness,
-        get_string_length(setup_window->dpi_data->rasterizations, increment->label)),
-        get_string_length(setup_window->dpi_data->rasterizations, start_game_button->label) +
-            2 * setup_window->dpi_data->text_control_padding);
-    setup_window->width = 2 *(setup_window->dpi_data->text_control_height +
-        setup_window->dpi_data->control_border_thickness) + start_game_button->width;
-    player_color->label_baseline_y = 2 * setup_window->dpi_data->text_line_height;
-    time->min_y = player_color->label_baseline_y + 3 * setup_window->dpi_data->text_line_height +
-        setup_window->dpi_data->text_control_height +
-        setup_window->dpi_data->control_border_thickness;
-    increment->min_y = time->min_y + setup_window->dpi_data->text_line_height +
-        2 * (setup_window->dpi_data->control_border_thickness +
-            setup_window->dpi_data->text_control_height);
+    start_game_button->width = max32(max32(5 * window->dpi_data->digit_input_width +
+        4 * ROUND26_6_TO_PIXEL(window->dpi_data->glyphs[':' - g_codepoints[0]].advance) +
+            6 * window->dpi_data->control_border_thickness,
+        get_string_length(window->dpi_data->glyphs, increment->label)),
+        get_string_length(window->dpi_data->glyphs, start_game_button->label) +
+            2 * window->dpi_data->text_control_padding);
+    window->width = 2 *(window->dpi_data->text_control_height +
+        window->dpi_data->control_border_thickness) + start_game_button->width;
+    player_color->label_baseline_y = 2 * window->dpi_data->text_line_height;
+    time->min_y = player_color->label_baseline_y + 3 * window->dpi_data->text_line_height +
+        window->dpi_data->text_control_height + window->dpi_data->control_border_thickness;
+    increment->min_y = time->min_y + window->dpi_data->text_line_height +
+        2 * (window->dpi_data->control_border_thickness + window->dpi_data->text_control_height);
     start_game_button->min_y = increment->min_y + 
-        2 * (setup_window->dpi_data->control_border_thickness +
-            setup_window->dpi_data->text_control_height);
-    setup_window->height = start_game_button->min_y +
-        setup_window->dpi_data->control_border_thickness +
-        2 * setup_window->dpi_data->text_control_height;
+        2 * (window->dpi_data->control_border_thickness + window->dpi_data->text_control_height);
+    window->height = start_game_button->min_y + window->dpi_data->control_border_thickness +
+        2 * window->dpi_data->text_control_height;
 }
 
 void init_setup_window(uint16_t dpi)
 {
-    Window*setup_window = g_windows + WINDOW_SETUP;
-    setup_window->control_count = SETUP_WINDOW_CONTROL_COUNT;
-    Control*control = setup_window->controls + SETUP_WINDOW_PLAYER_COLOR;
+    Window*window = g_windows + WINDOW_SETUP;
+    window->control_count = SETUP_WINDOW_CONTROL_COUNT;
+    Control*control = window->controls + SETUP_WINDOW_PLAYER_COLOR;
     control->control_type = CONTROL_RADIO;
     g_engine_player_index = PLAYER_INDEX_BLACK;
-    control = setup_window->controls + SETUP_WINDOW_TIME;
+    control = window->controls + SETUP_WINDOW_TIME;
     control->control_type = CONTROL_TIME_INPUT;
     control->time_input.label = "Time:";
     control->time_input.digits = g_time_control;
     control->time_input.digit_count = ARRAY_COUNT(g_time_control);
-    control = setup_window->controls + SETUP_WINDOW_INCREMENT;
+    control = window->controls + SETUP_WINDOW_INCREMENT;
     control->control_type = CONTROL_TIME_INPUT;
     control->time_input.label = "Increment:";
     control->time_input.digits = g_increment;
     control->time_input.digit_count = ARRAY_COUNT(g_increment);
-    control = setup_window->controls + SETUP_WINDOW_START_GAME;
+    control = window->controls + SETUP_WINDOW_START_GAME;
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Start";
-    set_control_ids(setup_window);
+    set_control_ids(window);
     set_setup_window_dpi(dpi);
-    setup_window->pixels = 0;
-    setup_window->pixel_buffer_capacity = 0;
-    setup_window->hovered_control_id = NULL_CONTROL;
-    setup_window->clicked_control_id = NULL_CONTROL;
+    window->pixels = 0;
+    window->pixel_buffer_capacity = 0;
+    window->hovered_control_id = NULL_CONTROL;
+    window->clicked_control_id = NULL_CONTROL;
     g_selected_digit_id = NULL_CONTROL;
 }
 
 void set_start_window_dpi(char*text, uint16_t dpi)
 {
-    Window*start_window = g_windows + WINDOW_START;
-    set_dpi_data(start_window, dpi);
-    uint32_t button_padding = 2 * start_window->dpi_data->text_control_padding;
-    int32_t button_min_x = start_window->dpi_data->text_control_height +
-        start_window->dpi_data->control_border_thickness;
-    int32_t button_min_y = start_window->dpi_data->control_border_thickness;
+    Window*window = g_windows + WINDOW_START;
+    set_dpi_data(window, dpi);
+    uint32_t button_padding = 2 * window->dpi_data->text_control_padding;
+    int32_t button_min_x =
+        window->dpi_data->text_control_height + window->dpi_data->control_border_thickness;
+    int32_t button_min_y = window->dpi_data->control_border_thickness;
     if (text[0])
     {
-        button_min_y += 3 * start_window->dpi_data->text_line_height;
-        start_window->width = get_string_length(start_window->dpi_data->rasterizations, text);
+        button_min_y += 3 * window->dpi_data->text_line_height;
+        window->width = get_string_length(window->dpi_data->glyphs, text);
     }
     else
     {
-        button_min_y += start_window->dpi_data->text_control_height;
-        start_window->width = 0;
+        button_min_y += window->dpi_data->text_control_height;
+        window->width = 0;
     }
     for (size_t i = 0; i < START_CONTROL_COUNT; ++i)
     {
-        Button*button = &start_window->controls[i].button;
+        Button*button = &window->controls[i].button;
         button->min_x = button_min_x;
-        button->width = button_padding +
-            get_string_length(start_window->dpi_data->rasterizations, button->label);
-        button_min_x += button->width + start_window->dpi_data->control_border_thickness;
+        button->width = button_padding + get_string_length(window->dpi_data->glyphs, button->label);
+        button_min_x += button->width + window->dpi_data->control_border_thickness;
         button->min_y = button_min_y;
     }
-    start_window->width = start_window->dpi_data->text_control_height +
-        max32(start_window->width, button_min_x + start_window->dpi_data->control_border_thickness);
-    start_window->height = button_min_y + start_window->dpi_data->text_control_height +
-        start_window->dpi_data->control_border_thickness + start_window->dpi_data->text_control_height;
+    window->width = window->dpi_data->text_control_height +
+        max32(window->width, button_min_x + window->dpi_data->control_border_thickness);
+    window->height = button_min_y + window->dpi_data->text_control_height +
+        window->dpi_data->control_border_thickness + window->dpi_data->text_control_height;
 }
 
 void init_start_window(char*text, uint16_t dpi)
 {
-    Window*start_window = g_windows + WINDOW_START;
-    start_window->control_count = START_CONTROL_COUNT;
-    Control*button = start_window->controls + START_NEW_GAME;
+    Window*window = g_windows + WINDOW_START;
+    window->control_count = START_CONTROL_COUNT;
+    Control*button = window->controls + START_NEW_GAME;
     button->control_type = CONTROL_BUTTON;
     button->button.label = "New game";
-    button = start_window->controls + START_LOAD_GAME;
+    button = window->controls + START_LOAD_GAME;
     button->control_type = CONTROL_BUTTON;
     button->button.label = "Load game";
-    button = start_window->controls + START_QUIT;
+    button = window->controls + START_QUIT;
     button->control_type = CONTROL_BUTTON;
     button->button.label = "Quit";
-    set_control_ids(start_window);
+    set_control_ids(window);
     set_start_window_dpi(text, dpi);
-    start_window->hovered_control_id = NULL_CONTROL;
-    start_window->clicked_control_id = NULL_CONTROL;
-    start_window->pixels = 0;
-    start_window->pixel_buffer_capacity = 0;
+    window->hovered_control_id = NULL_CONTROL;
+    window->clicked_control_id = NULL_CONTROL;
+    window->pixels = 0;
+    window->pixel_buffer_capacity = 0;
 }
 
 void draw_start_window(char*text)
 {
-    Window*start_window = g_windows + WINDOW_START;
-    draw_controls(start_window);
-    draw_string(start_window, text, start_window->dpi_data->text_control_height,
-        2 * start_window->dpi_data->text_line_height, g_black);
+    Window*window = g_windows + WINDOW_START;
+    draw_controls(window);
+    draw_string(window, text, window->dpi_data->text_control_height,
+        2 * window->dpi_data->text_line_height, g_black);
 }
 
 #define DRAW_BY_50_CAN_BE_CLAIMED() (g_draw_by_50_count > 100)
 
 bool main_window_handle_left_mouse_button_down(int32_t cursor_x, int32_t cursor_y)
 {
-    Window*main_window = g_windows + WINDOW_MAIN;
-    main_window->clicked_control_id = main_window->hovered_control_id;
-    if (main_window->hovered_control_id == main_window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id)
+    Window*window = g_windows + WINDOW_MAIN;
+    window->clicked_control_id = window->hovered_control_id;
+    if (window->hovered_control_id == window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id)
     {
         if (!DRAW_BY_50_CAN_BE_CLAIMED())
         {
-            main_window->clicked_control_id = NULL_CONTROL;
+            window->clicked_control_id = NULL_CONTROL;
         }
     }
     else
     {
-        uint8_t board_base_id = main_window->controls[MAIN_WINDOW_BOARD].base_id;
-        if (main_window->hovered_control_id >= board_base_id &&
-            main_window->hovered_control_id < board_base_id + 64 &&
+        uint8_t board_base_id = window->controls[MAIN_WINDOW_BOARD].base_id;
+        if (window->hovered_control_id >= board_base_id &&
+            window->hovered_control_id < board_base_id + 64 &&
             (GET_POSITION(g_current_position_index)->active_player_index == g_engine_player_index ||
                 g_is_promoting))
         {
-            main_window->clicked_control_id = NULL_CONTROL;
+            window->clicked_control_id = NULL_CONTROL;
         }
         else
         {
             uint8_t promotion_selector_base_id =
-                main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
-            if (main_window->hovered_control_id >= promotion_selector_base_id &&
-                main_window->hovered_control_id < promotion_selector_base_id +
+                window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
+            if (window->hovered_control_id >= promotion_selector_base_id &&
+                window->hovered_control_id < promotion_selector_base_id +
                 ARRAY_COUNT(g_promotion_options) && !g_is_promoting)
             {
-                main_window->clicked_control_id = NULL_CONTROL;
+                window->clicked_control_id = NULL_CONTROL;
             }
         }
     }
-    return main_window->clicked_control_id != NULL_CONTROL;
+    return window->clicked_control_id != NULL_CONTROL;
 }
 
 GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t cursor_y)
 {
-    Window*main_window = g_windows + WINDOW_MAIN;
-    if (main_window->clicked_control_id == NULL_CONTROL)
+    Window*window = g_windows + WINDOW_MAIN;
+    if (window->clicked_control_id == NULL_CONTROL)
     {
         return ACTION_NONE;
     }
-    uint8_t id = id_of_control_cursor_is_over(main_window, cursor_x, cursor_y);
-    if (id == main_window->clicked_control_id)
+    uint8_t id = id_of_control_cursor_is_over(window, cursor_x, cursor_y);
+    if (id == window->clicked_control_id)
     {
-        main_window->clicked_control_id = NULL_CONTROL;
-        if (id == main_window->controls[MAIN_WINDOW_SAVE_GAME].base_id)
+        window->clicked_control_id = NULL_CONTROL;
+        if (id == window->controls[MAIN_WINDOW_SAVE_GAME].base_id)
         {
             return ACTION_SAVE_GAME;
         }
-        if (id == main_window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id)
+        if (id == window->controls[MAIN_WINDOW_CLAIM_DRAW].base_id)
         {
             return ACTION_CLAIM_DRAW;
         }
@@ -2593,7 +2637,7 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
         if (g_selected_piece_index == NULL_PIECE)
         {
             uint8_t square_index =
-                SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id);
+                SCREEN_SQUARE_INDEX(id - window->controls[MAIN_WINDOW_BOARD].base_id);
             uint8_t selected_piece_index = current_position->squares[square_index];
             if (PLAYER_INDEX(selected_piece_index) == current_position->active_player_index)
             {
@@ -2613,7 +2657,7 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
         else
         {
             uint8_t promotion_selector_base_id =
-                main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
+                window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].base_id;
             if (id >= promotion_selector_base_id &&
                 id < promotion_selector_base_id + ARRAY_COUNT(g_promotion_options))
             {
@@ -2633,7 +2677,7 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                 Piece current_position_selected_piece =
                     current_position->pieces[g_selected_piece_index];
                 uint8_t square_index =
-                    SCREEN_SQUARE_INDEX(id - main_window->controls[MAIN_WINDOW_BOARD].base_id);
+                    SCREEN_SQUARE_INDEX(id - window->controls[MAIN_WINDOW_BOARD].base_id);
                 if (current_position_selected_piece.square_index != square_index)
                 {
                     uint16_t*piece_first_move_index = g_selected_move_index;
@@ -2657,70 +2701,67 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
             }
         }
     }
-    main_window->clicked_control_id = NULL_CONTROL;
+    window->clicked_control_id = NULL_CONTROL;
     return ACTION_REDRAW;
 }
 
 void set_main_window_dpi(uint16_t dpi)
 {
-    Window*main_window = g_windows + WINDOW_MAIN;
-    set_dpi_data(main_window, dpi);
-    Board*board = &main_window->controls[MAIN_WINDOW_BOARD].board;
-    board->min_x = g_square_size + main_window->dpi_data->control_border_thickness;
+    Window*window = g_windows + WINDOW_MAIN;
+    set_dpi_data(window, dpi);
+    Board*board = &window->controls[MAIN_WINDOW_BOARD].board;
+    board->min_x = window->dpi_data->square_size + window->dpi_data->control_border_thickness;
     board->min_y = board->min_x;
-    main_window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].promotion_selector.min_x =
-        board->min_x + 2 * COLUMNS_PER_ICON;
-    Button*save_button = &main_window->controls[MAIN_WINDOW_SAVE_GAME].button;
-    save_button->min_x = board->min_x + 8 * g_square_size +
-        main_window->dpi_data->text_control_height +
-        2 * main_window->dpi_data->control_border_thickness;
-    save_button->min_y = board->min_y + 4 * g_square_size -
-        (main_window->dpi_data->text_control_height +
-            main_window->dpi_data->control_border_thickness / 2);
-    Button*claim_draw_button = &main_window->controls[MAIN_WINDOW_CLAIM_DRAW].button;
+    window->controls[MAIN_WINDOW_PROMOTION_SELECTOR].promotion_selector.min_x =
+        board->min_x + 2 * window->dpi_data->square_size;
+    Button*save_button = &window->controls[MAIN_WINDOW_SAVE_GAME].button;
+    save_button->min_x = board->min_x + 8 * window->dpi_data->square_size +
+        window->dpi_data->text_control_height + 2 * window->dpi_data->control_border_thickness;
+    save_button->min_y = board->min_y + 4 * window->dpi_data->square_size -
+        (window->dpi_data->text_control_height + window->dpi_data->control_border_thickness / 2);
+    Button*claim_draw_button = &window->controls[MAIN_WINDOW_CLAIM_DRAW].button;
     claim_draw_button->min_x = save_button->min_x;
-    claim_draw_button->min_y = save_button->min_y + main_window->dpi_data->text_control_height +
-        main_window->dpi_data->control_border_thickness;
-    save_button->width = 2 * main_window->dpi_data->text_control_padding +
-        max32(get_string_length(main_window->dpi_data->rasterizations, save_button->label),
-            get_string_length(main_window->dpi_data->rasterizations, claim_draw_button->label));
+    claim_draw_button->min_y = save_button->min_y + window->dpi_data->text_control_height +
+        window->dpi_data->control_border_thickness;
+    save_button->width = 2 * window->dpi_data->text_control_padding +
+        max32(get_string_length(window->dpi_data->glyphs, save_button->label),
+            get_string_length(window->dpi_data->glyphs, claim_draw_button->label));
     claim_draw_button->width = save_button->width;
-    main_window->width = save_button->min_x + save_button->width +
-        main_window->dpi_data->text_control_height +
-        main_window->dpi_data->control_border_thickness;
-    main_window->height =
-        board->min_y + 9 * g_square_size + main_window->dpi_data->control_border_thickness;
+    window->width = save_button->min_x + save_button->width +
+        window->dpi_data->text_control_height + window->dpi_data->control_border_thickness;
+    window->height = board->min_y + 9 * window->dpi_data->square_size +
+        window->dpi_data->control_border_thickness;
 }
 
 void init_main_window(uint16_t dpi)
 {
-    Window*main_window = g_windows + WINDOW_MAIN;
-    main_window->control_count = MAIN_WINDOW_CONTROL_COUNT;
-    main_window->controls = g_main_window_controls;
-    Control*control = main_window->controls + MAIN_WINDOW_BOARD;
+    Window*window = g_windows + WINDOW_MAIN;
+    window->control_count = MAIN_WINDOW_CONTROL_COUNT;
+    window->controls = g_main_window_controls;
+    Control*control = window->controls + MAIN_WINDOW_BOARD;
     control->control_type = CONTROL_BOARD;
-    control = main_window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
+    control = window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
     control->control_type = CONTROL_PROMOTION_SELECTOR;
-    control = main_window->controls + MAIN_WINDOW_SAVE_GAME;
+    control = window->controls + MAIN_WINDOW_SAVE_GAME;
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Save game";
-    control = main_window->controls + MAIN_WINDOW_CLAIM_DRAW;
+    control = window->controls + MAIN_WINDOW_CLAIM_DRAW;
     control->control_type = CONTROL_BUTTON;
     control->button.label = "Claim draw";
-    set_control_ids(main_window);
+    set_control_ids(window);
     set_main_window_dpi(dpi);
-    main_window->pixels = 0;
-    main_window->pixel_buffer_capacity = 0;
-    main_window->hovered_control_id = NULL_CONTROL;
-    main_window->clicked_control_id = NULL_CONTROL;
+    window->pixels = 0;
+    window->pixel_buffer_capacity = 0;
+    window->hovered_control_id = NULL_CONTROL;
+    window->clicked_control_id = NULL_CONTROL;
 }
 
 void draw_player(int32_t captured_pieces_min_y, int32_t timer_text_origin_y, uint8_t player_index,
     bool draw_captured_pieces)
 {
     Position*current_position = GET_POSITION(g_current_position_index);
-    Window*main_window = g_windows + WINDOW_MAIN;
-    Control*board = main_window->controls + MAIN_WINDOW_BOARD;
+    Window*window = g_windows + WINDOW_MAIN;
+    Control*board = window->controls + MAIN_WINDOW_BOARD;
     int32_t captured_piece_min_x = board->board.min_x;
     uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
     uint8_t max_piece_index = player_pieces_index + 16;
@@ -2731,36 +2772,54 @@ void draw_player(int32_t captured_pieces_min_y, int32_t timer_text_origin_y, uin
         {
             if (draw_captured_pieces)
             {
-                draw_icon(g_icon_bitmaps[player_index][piece.piece_type], main_window,
-                    captured_piece_min_x, captured_pieces_min_y);
-                captured_piece_min_x += g_square_size / 2;
+                draw_icon(window, captured_piece_min_x, captured_pieces_min_y, player_index,
+                    piece.piece_type);
+                captured_piece_min_x += window->dpi_data->square_size / 2;
             }
         }
         else
         {
             uint8_t screen_square_index = SCREEN_SQUARE_INDEX(piece.square_index);
-            int32_t bitmap_min_x = board->board.min_x + g_square_size * FILE(screen_square_index);
-            int32_t bitmap_min_y = board->board.min_y + g_square_size * RANK(screen_square_index);
+            int32_t icon_min_x =
+                board->board.min_x + window->dpi_data->square_size * FILE(screen_square_index);
+            int32_t icon_min_y =
+                board->board.min_y + window->dpi_data->square_size * RANK(screen_square_index);
             if (g_selected_piece_index == piece_index)
             {
-                Color*icon_bitmap = g_icon_bitmaps[current_position->active_player_index]
-                    [current_position->pieces[g_selected_piece_index].piece_type];
-                Color tinted_icon_bitmap[3600];
-                for (size_t i = 0; i < 3600; ++i)
+                size_t pixels_per_icon =
+                    window->dpi_data->square_size * window->dpi_data->square_size;
+                Grey*icon = window->dpi_data->icons +
+                    (player_index * PIECE_TYPE_COUNT + piece.piece_type) * pixels_per_icon;
+                int32_t max_x_in_icon =
+                    min32(window->dpi_data->square_size, window->width - icon_min_x);
+                int32_t max_y_in_icon =
+                    min32(window->dpi_data->square_size, window->height - icon_min_y);
+                Color*icon_row_min_x_in_window =
+                    window->pixels + icon_min_y * window->width + icon_min_x;
+                icon += pixels_per_icon;
+                for (int32_t y_in_icon = 0; y_in_icon < max_y_in_icon; ++y_in_icon)
                 {
-                    Color icon_pixel = icon_bitmap[i];
-                    Color*tinted_icon_pixel = tinted_icon_bitmap + i;
-                    tinted_icon_pixel->red = (icon_pixel.red + 255) / 2;
-                    tinted_icon_pixel->green = icon_pixel.green / 2;
-                    tinted_icon_pixel->blue = icon_pixel.blue / 2;
-                    tinted_icon_pixel->alpha = icon_pixel.alpha;
+                    icon -= window->dpi_data->square_size;
+                    for (int32_t x_in_icon = 0; x_in_icon < max_x_in_icon; ++x_in_icon)
+                    {
+                        Color*window_pixel = icon_row_min_x_in_window + x_in_icon;
+                        Grey icon_pixel = icon[x_in_icon];
+                        uint32_t lerp_term = (255 - icon_pixel.alpha) * window_pixel->alpha;
+                        window_pixel->red = ((icon_pixel.grey + 255) * icon_pixel.alpha) / 510 +
+                            (lerp_term * window_pixel->red) / 65025;
+                        uint32_t blue_green_icon_term = (icon_pixel.grey * icon_pixel.alpha) / 510;
+                        window_pixel->green =
+                            blue_green_icon_term + (lerp_term * window_pixel->green) / 65025;
+                        window_pixel->blue =
+                            blue_green_icon_term + (lerp_term * window_pixel->blue) / 65025;
+                        window_pixel->alpha = icon_pixel.alpha + lerp_term / 255;
+                    }
+                    icon_row_min_x_in_window += window->width;
                 }
-                draw_icon(tinted_icon_bitmap, main_window, bitmap_min_x, bitmap_min_y);
             }
             else
             {
-                draw_icon(g_icon_bitmaps[player_index][piece.piece_type], main_window,
-                    bitmap_min_x, bitmap_min_y);
+                draw_icon(window, icon_min_x, icon_min_y, player_index, piece.piece_type);
             }
         }
     }
@@ -2779,74 +2838,74 @@ void draw_player(int32_t captured_pieces_min_y, int32_t timer_text_origin_y, uin
         time /= 60;
     }
     time_text[8] = 0;
-    draw_string(main_window, time_text, main_window->controls[MAIN_WINDOW_SAVE_GAME].button.min_x,
+    draw_string(window, time_text, window->controls[MAIN_WINDOW_SAVE_GAME].button.min_x,
         timer_text_origin_y, g_black);
 }
 
 void draw_main_window(void)
 {
-    Window*main_window = g_windows + WINDOW_MAIN;
-    clear_window(main_window);
-    Control*board = main_window->controls + MAIN_WINDOW_BOARD;
-    uint32_t board_width = FILE_COUNT * g_square_size;
-    draw_rectangle_border(main_window, board->board.min_x, board->board.min_y, board_width,
-        board_width);
+    Window*window = g_windows + WINDOW_MAIN;
+    clear_window(window);
+    Control*board = window->controls + MAIN_WINDOW_BOARD;
+    uint32_t board_width = FILE_COUNT * window->dpi_data->square_size;
+    draw_rectangle_border(window, board->board.min_x, board->board.min_y, board_width, board_width);
     for (size_t rank = 0; rank < RANK_COUNT; ++rank)
     {
-        int32_t square_min_y = board->board.min_y + g_square_size * rank;
+        int32_t square_min_y = board->board.min_y + window->dpi_data->square_size * rank;
         for (size_t file = 0; file < FILE_COUNT; ++file)
         {
             if ((rank + file) % 2)
             {
-                draw_rectangle(main_window, board->board.min_x + g_square_size * file, square_min_y,
-                    g_square_size, g_square_size, g_dark_square_gray);
+                draw_rectangle(window, board->board.min_x + window->dpi_data->square_size * file,
+                    square_min_y, window->dpi_data->square_size, window->dpi_data->square_size,
+                    g_dark_square_gray);
             }
         }
     }
-    color_square_with_index(main_window, &board->board, g_hovered_blue,
-        main_window->hovered_control_id - board->base_id);
-    color_square_with_index(main_window, &board->board, g_clicked_red,
-        main_window->clicked_control_id - board->base_id);
-    Control*save_game_button = main_window->controls + MAIN_WINDOW_SAVE_GAME;
-    draw_active_button(main_window, save_game_button);
+    color_square_with_index(window, &board->board, g_hovered_blue,
+        window->hovered_control_id - board->base_id);
+    color_square_with_index(window, &board->board, g_clicked_red,
+        window->clicked_control_id - board->base_id);
+    Control*save_game_button = window->controls + MAIN_WINDOW_SAVE_GAME;
+    draw_active_button(window, save_game_button);
     if (DRAW_BY_50_CAN_BE_CLAIMED())
     {
-        draw_active_button(main_window, main_window->controls + MAIN_WINDOW_CLAIM_DRAW);
+        draw_active_button(window, window->controls + MAIN_WINDOW_CLAIM_DRAW);
     }
     else
     {
-        draw_button(main_window, &main_window->controls[MAIN_WINDOW_CLAIM_DRAW].button, g_white,
+        draw_button(window, &window->controls[MAIN_WINDOW_CLAIM_DRAW].button, g_white,
             g_dark_square_gray);
     }
     if (g_is_promoting)
     {
-        Control*promotion_selector = main_window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
+        Control*promotion_selector = window->controls + MAIN_WINDOW_PROMOTION_SELECTOR;
         int32_t icon_min_x = promotion_selector->promotion_selector.min_x;
-        draw_rectangle(main_window, icon_min_x - main_window->dpi_data->control_border_thickness, 0,
-            main_window->dpi_data->control_border_thickness, COLUMNS_PER_ICON, g_black);
+        draw_rectangle(window, icon_min_x - window->dpi_data->control_border_thickness, 0,
+            window->dpi_data->control_border_thickness, window->dpi_data->square_size, g_black);
         for (size_t i = 0; i < ARRAY_COUNT(g_promotion_options); ++i)
         {
             uint8_t selection_id = promotion_selector->base_id + i;
-            if (main_window->clicked_control_id == selection_id)
+            if (window->clicked_control_id == selection_id)
             {
-                draw_rectangle(main_window, icon_min_x, 0, COLUMNS_PER_ICON, COLUMNS_PER_ICON,
-                    g_clicked_red);
+                draw_rectangle(window, icon_min_x, 0, window->dpi_data->square_size,
+                    window->dpi_data->square_size, g_clicked_red);
             }
-            else if (main_window->hovered_control_id == selection_id)
+            else if (window->hovered_control_id == selection_id)
             {
-                draw_rectangle(main_window, icon_min_x, 0, COLUMNS_PER_ICON, COLUMNS_PER_ICON,
-                    g_hovered_blue);
+                draw_rectangle(window, icon_min_x, 0, window->dpi_data->square_size,
+                    window->dpi_data->square_size, g_hovered_blue);
             }
-            draw_icon(g_icon_bitmaps[!g_engine_player_index][g_promotion_options[i]], main_window,
-                icon_min_x, 0);
-            icon_min_x += COLUMNS_PER_ICON;
+            draw_icon(window, icon_min_x, 0, !g_engine_player_index, g_promotion_options[i]);
+            icon_min_x += window->dpi_data->square_size;
         }
-        draw_rectangle(main_window, icon_min_x, 0,
-            main_window->dpi_data->control_border_thickness, COLUMNS_PER_ICON, g_black);
+        draw_rectangle(window, icon_min_x, 0, window->dpi_data->control_border_thickness,
+            window->dpi_data->square_size, g_black);
     }
-    draw_player(board->board.min_y + board_width + main_window->dpi_data->control_border_thickness,
-        board->board.min_y + main_window->dpi_data->text_line_height, g_engine_player_index, true);
-    draw_player(0, board->board.min_y + 7 * g_square_size + main_window->dpi_data->text_line_height,
+    draw_player(board->board.min_y + board_width + window->dpi_data->control_border_thickness,
+        board->board.min_y + window->dpi_data->text_line_height, g_engine_player_index, true);
+    draw_player(0,
+        board->board.min_y + 7 * window->dpi_data->square_size + window->dpi_data->text_line_height,
         !g_engine_player_index, !g_is_promoting);
 }
 
@@ -3130,9 +3189,9 @@ void init_game(void)
     init_board_state_archive(32);
     g_selected_move_index = &g_first_leaf_index;
     make_move_current(g_first_leaf_index);
-    Window*main_window = g_windows + WINDOW_MAIN;
-    main_window->hovered_control_id = NULL_CONTROL;
-    main_window->clicked_control_id = NULL_CONTROL;
+    Window*window = g_windows + WINDOW_MAIN;
+    window->hovered_control_id = NULL_CONTROL;
+    window->clicked_control_id = NULL_CONTROL;
     g_draw_by_50_count = 0;
     g_run_engine = true;
     g_is_promoting = false;
@@ -3143,10 +3202,12 @@ void init_game(void)
     g_last_move_time = get_time();
 }
 
-void init(void*font_data, size_t font_data_size)
+void init(void*font_data, size_t text_font_data_size, size_t icon_font_data_size)
 {
     FT_Init_FreeType(&g_freetype_library);
-    FT_New_Memory_Face(g_freetype_library, font_data, font_data_size, 0, &g_face);
+    FT_New_Memory_Face(g_freetype_library, font_data, text_font_data_size, 0, &g_text_face);
+    FT_New_Memory_Face(g_freetype_library, (void*)((uintptr_t)font_data + text_font_data_size),
+        text_font_data_size, 0, &g_icon_face);
     g_windows[WINDOW_START].controls = g_dialog_controls;
     g_position_pool = RESERVE_MEMORY(NULL_POSITION * sizeof(Position));
     g_index_of_first_free_pool_position = NULL_POSITION;

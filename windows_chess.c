@@ -533,23 +533,6 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     }
 }
 
-void load_piece_icon_bitmap(PieceType piece_type, uint8_t player_index, char*file_name,
-    char*exe_path, size_t exe_path_length)
-{
-    while (*file_name)
-    {
-        exe_path[exe_path_length] = *file_name;
-        ++exe_path_length;
-        ++file_name;
-    }
-    exe_path[exe_path_length] = 0;
-    HANDLE file_handle =
-        CreateFileA(exe_path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
-    ReadFile(file_handle, g_icon_bitmaps[player_index][piece_type], sizeof(Color) * PIXELS_PER_ICON,
-        0, 0);
-    CloseHandle(file_handle);
-}
-
 HWND windows_init(void)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
@@ -580,12 +563,24 @@ HWND windows_init(void)
         OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, "Ariel");
     HDC device_context = GetDC(dialog_handle);
     SelectFont(device_context, win_font);
-    size_t font_data_size = GetFontData(device_context, 0, 0, 0, 0);
-    void*font_data = VirtualAlloc(0, font_data_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    GetFontData(device_context, 0, 0, font_data, font_data_size);
+    size_t text_font_data_size = GetFontData(device_context, 0, 0, 0, 0);
+    char exe_path[256];
+    size_t exe_path_length =
+        GetModuleFileNameA(0, exe_path, sizeof(exe_path)) + 1 - sizeof("windows_chess.exe");
+    strcpy(exe_path + exe_path_length, "piece_icons.ttf");
+    HANDLE file_handle =
+        CreateFileA(exe_path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+    LARGE_INTEGER icon_font_file_size;
+    GetFileSizeEx(file_handle, &icon_font_file_size);
+    void*font_data = VirtualAlloc(0, text_font_data_size + icon_font_file_size.QuadPart,
+        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    GetFontData(device_context, 0, 0, font_data, text_font_data_size);
     ReleaseDC(dialog_handle, device_context);
     DeleteObject(win_font);
-    init(font_data, font_data_size);
+    ReadFile(file_handle, (void*)((uintptr_t)font_data + text_font_data_size),
+        icon_font_file_size.QuadPart, 0, 0);
+    CloseHandle(file_handle);
+    init(font_data, text_font_data_size, icon_font_file_size.QuadPart);
     g_status_data.text = "";
     init_start_window(g_status_data.text, GetDpiForWindow(dialog_handle));
     run_dialog(g_windows + WINDOW_START, dialog_handle, 0);
@@ -593,33 +588,6 @@ HWND windows_init(void)
     {
         return 0;
     }
-    char exe_path[256];
-    size_t exe_path_length =
-        GetModuleFileNameA(0, exe_path, sizeof(exe_path)) + 1 - sizeof("windows_chess.exe");
-    load_piece_icon_bitmap(PIECE_ROOK, PLAYER_INDEX_WHITE, "whiteRook.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_KNIGHT, PLAYER_INDEX_WHITE, "whiteKnight.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_BISHOP, PLAYER_INDEX_WHITE, "whiteBishop.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_QUEEN, PLAYER_INDEX_WHITE, "whiteQueen.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_PAWN, PLAYER_INDEX_WHITE, "whitePawn.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_KING, PLAYER_INDEX_WHITE, "whiteKing.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_ROOK, PLAYER_INDEX_BLACK, "blackRook.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_KNIGHT, PLAYER_INDEX_BLACK, "blackKnight.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_BISHOP, PLAYER_INDEX_BLACK, "blackBishop.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_QUEEN, PLAYER_INDEX_BLACK, "blackQueen.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_PAWN, PLAYER_INDEX_BLACK, "blackPawn.bin", exe_path,
-        exe_path_length);
-    load_piece_icon_bitmap(PIECE_KING, PLAYER_INDEX_BLACK, "blackKing.bin", exe_path,
-        exe_path_length);
     wc.lpfnWndProc = main_window_proc;
     wc.lpszClassName = "Chess";
     RegisterClassEx(&wc);
