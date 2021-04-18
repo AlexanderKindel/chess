@@ -117,7 +117,7 @@ void handle_turn_action(HWND main_window_handle, GUIAction action)
     {
     case ACTION_CHECKMATE:
     {
-        if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
+        if (g_current_position.active_player_index == PLAYER_INDEX_WHITE)
         {
             g_status_data.text = "Checkmate. Black wins.";
         }
@@ -129,7 +129,7 @@ void handle_turn_action(HWND main_window_handle, GUIAction action)
     }
     case ACTION_FLAG:
     {
-        if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
+        if (g_current_position.active_player_index == PLAYER_INDEX_WHITE)
         {
             g_status_data.text = "White is out of time. Black wins.";
         }
@@ -332,17 +332,14 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
                         {
                             DWORD bytes_read;
                             if (ReadFile(file_handle, file_memory, (DWORD)file_size.QuadPart,
-                                &bytes_read, 0))
+                                &bytes_read, 0) && bytes_read == file_size.QuadPart &&
+                                load_game(file_memory, file_size.QuadPart))
                             {
-                                if (bytes_read == file_size.QuadPart)
-                                {
-                                    CloseHandle(file_handle);
-                                    load_game(file_memory, file_size.QuadPart);
-                                    g_status_data.status = id;
-                                    DestroyWindow(window_handle);
-                                    PostQuitMessage(0);
-                                    return 0;
-                                }
+                                CloseHandle(file_handle);
+                                g_status_data.status = id;
+                                DestroyWindow(window_handle);
+                                PostQuitMessage(0);
+                                return 0;
                             }
                             VirtualFree(file_memory, 0, MEM_RELEASE);
                         }
@@ -446,7 +443,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         }
         if (status & UPDATE_TIMER_TIME_OUT)
         {
-            if (g_position_pool[g_current_position_index].active_player_index == PLAYER_INDEX_WHITE)
+            if (g_current_position.active_player_index == PLAYER_INDEX_WHITE)
             {
                 g_status_data.text = "White is out of time. Black wins.";
             }
@@ -501,7 +498,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 if (file_handle != INVALID_HANDLE_VALUE)
                 {
                     void*file_memory = VirtualAlloc(0, SAVE_FILE_STATIC_PART_SIZE +
-                        g_unique_state_count * sizeof(BoardState),
+                        g_unique_position_count * sizeof(CompressedPosition),
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
                     uint32_t file_size = save_game(file_memory);
                     DWORD bytes_written;
