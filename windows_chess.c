@@ -358,7 +358,7 @@ LRESULT CALLBACK start_window_proc(HWND window_handle, UINT message, WPARAM w_pa
             run_dialog(g_windows + WINDOW_SETUP, dialog_handle, 0);
             PostQuitMessage(0);
             g_status_data.status = id;
-            init_game();
+            init_new_game();
             return 0;
         }
         else if (id == window->controls[START_QUIT].base_id)
@@ -498,7 +498,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 if (file_handle != INVALID_HANDLE_VALUE)
                 {
                     void*file_memory = VirtualAlloc(0, SAVE_FILE_STATIC_PART_SIZE +
-                        g_unique_position_count * sizeof(CompressedPosition),
+                        g_unique_played_position_count * sizeof(CompressedPosition),
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
                     uint32_t file_size = save_game(file_memory);
                     DWORD bytes_written;
@@ -535,7 +535,6 @@ HWND windows_init(void)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     SYSTEM_INFO system_info;
     GetSystemInfo(&system_info);
-    g_page_size = system_info.dwPageSize;
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
     g_counts_per_second = frequency.QuadPart;
