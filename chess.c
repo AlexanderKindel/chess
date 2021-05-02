@@ -154,10 +154,20 @@ typedef struct Position
     bool reset_draw_by_50_count;
 } Position;
 
+typedef struct CompressedPosition
+{
+    uint8_t square_mask[8];
+    uint8_t piece_hashes[16];
+    uint8_t en_passant_file;
+    uint8_t castling_rights_lost : 4;
+    uint8_t active_player_index : 1;
+} CompressedPosition;
+
 typedef struct PositionTreeNode
 {
     int16_t evaluation;
     uint16_t parent_index;
+    CompressedPosition position;
     union
     {
         struct
@@ -174,6 +184,7 @@ typedef struct PositionTreeNode
         uint16_t previous_transposition_index;
     };
     uint16_t next_transposion_index;
+    uint16_t index_of_next_position_with_same_hash;
     bool is_leaf;
     bool reset_draw_by_50_count : 1;
     bool moves_have_been_found : 1;
@@ -181,29 +192,13 @@ typedef struct PositionTreeNode
     bool evaluation_has_been_propagated_to_parents : 1;
 } PositionTreeNode;
 
-typedef struct CompressedPosition
-{
-    uint8_t square_mask[8];
-    uint8_t piece_hashes[16];
-    uint8_t en_passant_file;
-    uint8_t castling_rights_lost : 4;
-    uint8_t active_player_index : 1;
-} CompressedPosition;
-
-typedef struct TreePositionRecord
-{
-    CompressedPosition position;
-    uint16_t index_of_next_record;
-    uint16_t position_node_index;
-} TreePositionRecord;
-
-typedef struct PlayedPositionRecord
+typedef struct PositionRecord
 {
     CompressedPosition position;
     uint16_t index_of_next_record;
     uint8_t count;
     uint8_t generation;
-} PlayedPositionRecord;
+} PositionRecord;
 
 typedef union Color
 {
@@ -275,21 +270,16 @@ typedef enum WindowIndex
 #define PLAYER_INDEX_WHITE 0
 #define PLAYER_INDEX_BLACK 1
 
-PositionTreeNode g_position_tree_node_pool[NULL_POSITION_TREE_NODE];
-uint16_t*g_selected_move_node_index;
+PositionTreeNode g_position_tree_nodes[NULL_POSITION_TREE_NODE];
+uint16_t g_tree_position_buckets[NULL_POSITION_TREE_NODE];
+uint16_t g_selected_move_node_index;
 uint16_t g_first_leaf_index;
 uint16_t g_index_of_first_free_position_tree_node;
 uint16_t g_next_leaf_to_evaluate_index;
-uint16_t g_position_tree_node_pool_cursor;
 
-uint16_t g_tree_position_buckets[NULL_POSITION_TREE_NODE];
-TreePositionRecord g_tree_position_records[NULL_POSITION_TREE_NODE];
-uint16_t g_index_of_first_free_tree_position_record;
-uint16_t g_tree_position_record_cursor;
-
-PlayedPositionRecord*g_played_position_records;
-uint16_t g_played_position_external_record_count;
-uint16_t g_played_position_bucket_count;
+PositionRecord*g_position_records;
+uint16_t g_external_position_record_count;
+uint16_t g_position_record_bucket_count;
 uint16_t g_unique_played_position_count;
 uint8_t g_played_position_generation;
 
@@ -298,7 +288,7 @@ Control g_main_window_controls[MAIN_WINDOW_CONTROL_COUNT];
 Window g_windows[WINDOW_COUNT];
 DPIData g_dpi_datas[WINDOW_COUNT];
 uint8_t g_captured_piece_counts[2][PIECE_TYPE_COUNT];
-Position g_current_position;
+Position g_current_position[2];
 uint64_t g_times_left_as_of_last_move[2];
 uint64_t g_last_move_time;
 uint64_t g_time_increment;
@@ -307,6 +297,7 @@ uint16_t g_seconds_left[2];
 uint16_t g_draw_by_50_count;
 DigitInput g_time_control[5];
 DigitInput g_increment[3];
+uint8_t g_active_player_index;
 uint8_t g_selected_piece_index;
 uint8_t g_selected_digit_id;
 uint8_t g_engine_player_index;
@@ -319,7 +310,7 @@ bool g_is_promoting;
 PositionTreeNode*get_position_tree_node(uint16_t node_index)
 {
     ASSERT(node_index != NULL_POSITION_TREE_NODE);
-    return g_position_tree_node_pool + node_index;
+    return g_position_tree_nodes + node_index;
 }
 
 uint16_t get_previous_leaf_index(PositionTreeNode*node)
@@ -340,12 +331,6 @@ uint16_t get_first_move_node_index(PositionTreeNode*node)
     return node->first_move_node_index;
 }
 
-uint16_t get_record_index(PositionTreeNode*node)
-{
-    ASSERT(node->is_canonical);
-    return node->position_record_index;
-}
-
 uint16_t get_previous_transposition_index(PositionTreeNode*node)
 {
     ASSERT(!node->is_canonical);
@@ -364,12 +349,6 @@ void set_next_leaf_index(PositionTreeNode*node, uint16_t value)
     node->next_leaf_index = value;
 }
 
-void set_record_index(PositionTreeNode*node, uint16_t value)
-{
-    ASSERT(node->is_canonical);
-    node->position_record_index = value;
-}
-
 void set_first_move_node_index(PositionTreeNode*node, uint16_t value)
 {
     ASSERT(!node->is_leaf);
@@ -386,25 +365,21 @@ void set_previous_transposition_index(PositionTreeNode*node, uint16_t value)
 #define GET_PREVIOUS_LEAF_INDEX(node) get_previous_leaf_index(node)
 #define GET_NEXT_LEAF_INDEX(position_tree_node) get_next_leaf_index(position_tree_node)
 #define GET_FIRST_MOVE_NODE_INDEX(node) get_first_move_node_index(node)
-#define GET_RECORD_INDEX(node) get_record_index(node)
 #define GET_PREVIOUS_TRANSPOSITION_INDEX(node) get_previous_transposition_index(node)
 #define SET_PREVIOUS_LEAF_INDEX(position_tree_node, value) set_previous_leaf_index(position_tree_node, value)
 #define SET_NEXT_LEAF_INDEX(position_tree_node, value) set_next_leaf_index(position_tree_node, value)
 #define SET_FIRST_MOVE_NODE_INDEX(node, value) set_first_move_node_index(node, value)
-#define SET_RECORD_INDEX(node, value) set_record_index(node, value)
 #define SET_PREVIOUS_TRANSPOSITION_INDEX(node, value) set_previous_transposition_index(node, value)
 #else
 #define ASSERT(condition)
-#define GET_POSITION_TREE_NODE(node_index) (g_position_tree_node_pool + (node_index))
+#define GET_POSITION_TREE_NODE(node_index) (g_position_tree_nodes + (node_index))
 #define GET_PREVIOUS_LEAF_INDEX(position_tree_node) (position_tree_node)->previous_leaf_index
 #define GET_NEXT_LEAF_INDEX(position_tree_node) (position_tree_node)->next_leaf_index
 #define GET_FIRST_MOVE_NODE_INDEX(node) (node)->first_move_node_index
-#define GET_RECORD_INDEX(node) (node)->position_record_index
 #define GET_PREVIOUS_TRANSPOSITION_INDEX(node) (node)->previous_transposition_index
 #define SET_PREVIOUS_LEAF_INDEX(position_tree_node, value) ((position_tree_node)->previous_leaf_index = (value))
 #define SET_NEXT_LEAF_INDEX(position_tree_node, value) ((position_tree_node)->next_leaf_index = (value))
 #define SET_FIRST_MOVE_NODE_INDEX(node, value) ((node)->first_move_node_index = (value))
-#define SET_RECORD_INDEX(node, value) ((node)->position_record_index = (value))
 #define SET_PREVIOUS_TRANSPOSITION_INDEX(node, value) ((node)->previous_transposition_index = (value))
 #endif
 
@@ -415,7 +390,7 @@ void set_previous_transposition_index(PositionTreeNode*node, uint16_t value)
 #define FILE(square_index) ((square_index) & 0b111)
 #define SCREEN_SQUARE_INDEX(square_index) (g_engine_player_index == PLAYER_INDEX_WHITE ? (63 - (square_index)) : (square_index))
 #define SQUARE_INDEX(rank, file) (FILE_COUNT * (rank) + (file))
-#define EXTERNAL_PLAYED_POSITION_RECORDS() (g_played_position_records + g_played_position_bucket_count)
+#define EXTERNAL_POSITION_RECORDS() (g_position_records + g_position_record_bucket_count)
 #define PLAYER_PIECES_INDEX(player_index) ((player_index) << 4)
 #define EN_PASSANT_RANK(player_index, forward_delta) KING_RANK(player_index) + ((forward_delta) << 2)
 #define PLAYER_WIN(player_index) (((int16_t[]){INT16_MAX, -INT16_MAX})[player_index])
@@ -423,38 +398,38 @@ void set_previous_transposition_index(PositionTreeNode*node, uint16_t value)
 uint64_t g_counts_per_second;
 uint64_t g_max_time;
 
-void init_played_position_archive(uint8_t bucket_count)
+void init_position_archive(uint8_t bucket_count)
 {
     g_played_position_generation = 0;
-    g_played_position_bucket_count = bucket_count;
-    g_played_position_records = ALLOCATE(2 * sizeof(PlayedPositionRecord) * bucket_count);
+    g_position_record_bucket_count = bucket_count;
+    g_position_records = ALLOCATE(2 * sizeof(PositionRecord) * bucket_count);
     for (size_t i = 0; i < bucket_count; ++i)
     {
-        g_played_position_records[i] =
-            (PlayedPositionRecord) { (CompressedPosition) { 0 }, NULL_POSITION_TREE_NODE, 0, 0 };
+        g_position_records[i] =
+            (PositionRecord) { (CompressedPosition) { 0 }, NULL_POSITION_TREE_NODE, 0, 0 };
     }
     g_unique_played_position_count = 0;
-    g_played_position_external_record_count = 0;
+    g_external_position_record_count = 0;
 }
 
-bool archive_played_position(CompressedPosition*position);
+bool archive_position(CompressedPosition*position);
 
 void increment_unique_position_count(void)
 {
     ++g_unique_played_position_count;
-    if (g_unique_played_position_count == g_played_position_bucket_count)
+    if (g_unique_played_position_count == g_position_record_bucket_count)
     {
-        PlayedPositionRecord*old_buckets = g_played_position_records;
-        PlayedPositionRecord*old_external_records = EXTERNAL_PLAYED_POSITION_RECORDS();
-        init_played_position_archive(g_played_position_bucket_count << 1);
-        for (size_t i = 0; i < g_played_position_bucket_count; ++i)
+        PositionRecord*old_buckets = g_position_records;
+        PositionRecord*old_external_records = EXTERNAL_POSITION_RECORDS();
+        init_position_archive(g_position_record_bucket_count << 1);
+        for (size_t i = 0; i < g_position_record_bucket_count; ++i)
         {
-            PlayedPositionRecord*record = old_buckets + i;
+            PositionRecord*record = old_buckets + i;
             if (record->count && record->generation == g_played_position_generation)
             { 
                 while (true)
                 {
-                    archive_played_position(&record->position);
+                    archive_position(&record->position);
                     if (record->index_of_next_record < NULL_PLAYED_POSITION_RECORD)
                     {
                         record = old_external_records + record->index_of_next_record;
@@ -481,29 +456,29 @@ uint32_t FNVHashCompressedPosition(CompressedPosition*position, uint16_t bit_cou
     return ((hash >> bit_count) ^ hash) & ((1 << bit_count) - 1);
 }
 
-bool archive_played_position(CompressedPosition*position)
+bool archive_position(CompressedPosition*position)
 {
     uint32_t bucket_count_bit_count;
-    BIT_SCAN_REVERSE(&bucket_count_bit_count, g_played_position_bucket_count);
+    BIT_SCAN_REVERSE(&bucket_count_bit_count, g_position_record_bucket_count);
     uint32_t bucket_index = FNVHashCompressedPosition(position, bucket_count_bit_count);
-    PlayedPositionRecord*record = g_played_position_records + bucket_index;
+    PositionRecord*record = g_position_records + bucket_index;
     if (record->count && record->generation == g_played_position_generation)
     {
         while (memcmp(position, &record->position, sizeof(CompressedPosition)))
         {
             if (record->index_of_next_record == NULL_PLAYED_POSITION_RECORD)
             {
-                record->index_of_next_record = g_played_position_external_record_count;
-                EXTERNAL_PLAYED_POSITION_RECORDS()[g_played_position_external_record_count] =
-                    (PlayedPositionRecord) { *position, NULL_PLAYED_POSITION_RECORD, 1,
+                record->index_of_next_record = g_external_position_record_count;
+                EXTERNAL_POSITION_RECORDS()[g_external_position_record_count] =
+                    (PositionRecord) { *position, NULL_PLAYED_POSITION_RECORD, 1,
                         g_played_position_generation };
-                ++g_played_position_external_record_count;
+                ++g_external_position_record_count;
                 increment_unique_position_count();
                 return true;
             }
             else
             {
-                record = EXTERNAL_PLAYED_POSITION_RECORDS() + record->index_of_next_record;
+                record = EXTERNAL_POSITION_RECORDS() + record->index_of_next_record;
             }
         }
         ++record->count;
@@ -724,89 +699,24 @@ uint16_t get_position_record_bucket_index(CompressedPosition*position)
     return out;
 }
 
-CompressedPosition*get_compressed_position(PositionTreeNode*node)
-{
-    while (!node->is_canonical)
-    {
-        node = GET_POSITION_TREE_NODE(GET_PREVIOUS_TRANSPOSITION_INDEX(node));
-    }
-    return &g_tree_position_records[GET_RECORD_INDEX(node)].position;
-}
-
 jmp_buf out_of_memory_jump_buffer;
 
 uint16_t allocate_position_tree_node(void)
 {
-    uint16_t new_node_index;
-    PositionTreeNode*new_node;
     if (g_index_of_first_free_position_tree_node == NULL_POSITION_TREE_NODE)
     {
-        if (g_position_tree_node_pool_cursor == NULL_POSITION_TREE_NODE)
-        {
-            g_run_engine = false;
-            longjmp(out_of_memory_jump_buffer, 1);
-        }
-        new_node_index = g_position_tree_node_pool_cursor;
-        new_node = GET_POSITION_TREE_NODE(new_node_index);
-        ++g_position_tree_node_pool_cursor;
-        new_node->is_leaf = true;
+        g_run_engine = false;
+        longjmp(out_of_memory_jump_buffer, 1);
     }
     else
     {
-        new_node_index = g_index_of_first_free_position_tree_node;
-        new_node = GET_POSITION_TREE_NODE(new_node_index);
-        if (new_node->is_canonical)
-        {
-            if (new_node->next_transposion_index == NULL_POSITION_TREE_NODE)
-            {
-                TreePositionRecord*record = g_tree_position_records + GET_RECORD_INDEX(new_node);
-                uint16_t*bucket =
-                    g_tree_position_buckets + get_position_record_bucket_index(&record->position);
-                while (*bucket != GET_RECORD_INDEX(new_node))
-                {
-                    bucket = &g_tree_position_records[*bucket].index_of_next_record;
-                }
-                *bucket = record->index_of_next_record;
-                record->index_of_next_record = g_index_of_first_free_tree_position_record;
-                g_index_of_first_free_tree_position_record = GET_RECORD_INDEX(new_node);
-            }
-            else
-            {
-                PositionTreeNode*transposition =
-                    GET_POSITION_TREE_NODE(new_node->next_transposion_index);
-                transposition->is_canonical = true;
-                SET_RECORD_INDEX(transposition, GET_RECORD_INDEX(new_node));
-            }
-        }
-        else
-        {
-            GET_POSITION_TREE_NODE(GET_PREVIOUS_TRANSPOSITION_INDEX(new_node))->
-                next_transposion_index = new_node->next_transposion_index;
-            if (new_node->next_transposion_index != NULL_POSITION_TREE_NODE)
-            {
-                SET_PREVIOUS_TRANSPOSITION_INDEX(
-                    GET_POSITION_TREE_NODE(new_node->next_transposion_index),
-                    GET_PREVIOUS_TRANSPOSITION_INDEX(new_node));
-            }
-        }
+        uint16_t new_node_index = g_index_of_first_free_position_tree_node;
+        ++g_index_of_first_free_position_tree_node;
+        PositionTreeNode*new_node = GET_POSITION_TREE_NODE(new_node_index);
         new_node->is_leaf = true;
-        if (new_node->parent_index == NULL_POSITION_TREE_NODE)
-        {
-            g_index_of_first_free_position_tree_node = GET_NEXT_LEAF_INDEX(new_node);
-        }
-        else if (new_node->next_move_node_index == NULL_POSITION_TREE_NODE)
-        {
-            GET_POSITION_TREE_NODE(new_node->parent_index)->next_leaf_index =
-                GET_NEXT_LEAF_INDEX(new_node);
-            g_index_of_first_free_position_tree_node = new_node->parent_index;
-        }
-        else
-        {
-            g_index_of_first_free_position_tree_node = GET_NEXT_LEAF_INDEX(new_node);
-        }
+        new_node->moves_have_been_found = false;
+        return new_node_index;
     }
-    new_node->moves_have_been_found = false;
-    return new_node_index;
 }
 
 void compress_position(CompressedPosition*out, Position*position)
@@ -832,78 +742,51 @@ void compress_position(CompressedPosition*out, Position*position)
     out->active_player_index = position->active_player_index;
 }
 
-void add_tree_position_record(CompressedPosition*compressed_position, uint16_t node_index)
+void compress_position_to_node(Position*position)
 {
-    PositionTreeNode*node = GET_POSITION_TREE_NODE(node_index);
-    TreePositionRecord*record;
-    node->is_canonical = true;
-    if (g_tree_position_record_cursor == NULL_POSITION_TREE_NODE)
+    PositionTreeNode*node = GET_POSITION_TREE_NODE(position->node_index);
+    node->reset_draw_by_50_count = position->reset_draw_by_50_count;
+    compress_position(&node->position, position);
+    uint16_t*index_of_position_with_same_hash =
+        g_tree_position_buckets + get_position_record_bucket_index(&node->position);
+    while (true)
     {
-        ASSERT(g_index_of_first_free_tree_position_record != NULL_POSITION_TREE_NODE);
-        SET_RECORD_INDEX(node, g_index_of_first_free_tree_position_record);
-        record = g_tree_position_records + GET_RECORD_INDEX(node);
-        g_index_of_first_free_tree_position_record = record->index_of_next_record;
-    }
-    else
-    {
-        SET_RECORD_INDEX(node, g_tree_position_record_cursor);
-        record = g_tree_position_records + GET_RECORD_INDEX(node);
-        ++g_tree_position_record_cursor;
-    }
-    record->position = *compressed_position;
-    record->index_of_next_record = NULL_POSITION_TREE_NODE;
-    record->position_node_index = node_index;
-    node->next_transposion_index = NULL_POSITION_TREE_NODE;
-}
-
-void compress_position_to_node(Position*position, PositionTreeNode*out)
-{
-    out->reset_draw_by_50_count = position->reset_draw_by_50_count;
-    CompressedPosition compressed_position;
-    compress_position(&compressed_position, position);
-    uint16_t*bucket =
-        g_tree_position_buckets + get_position_record_bucket_index(&compressed_position);
-    TreePositionRecord*record;
-    if (*bucket == NULL_POSITION_TREE_NODE)
-    {
-        add_tree_position_record(&compressed_position, position->node_index);
-        *bucket = GET_RECORD_INDEX(out);
-    }
-    else
-    {
-        record = g_tree_position_records + *bucket;
-        while (memcmp(&compressed_position, &record->position, sizeof(compressed_position)))
+        if (*index_of_position_with_same_hash == NULL_POSITION_TREE_NODE)
         {
-            if (record->index_of_next_record == NULL_POSITION_TREE_NODE)
-            {
-                add_tree_position_record(&compressed_position, position->node_index);
-                record->index_of_next_record = GET_RECORD_INDEX(out);
-                return;
-            }
-            else
-            {
-                record = g_tree_position_records + record->index_of_next_record;
-            }
+            node->is_canonical = true;
+            node->index_of_next_position_with_same_hash = NULL_POSITION_TREE_NODE;
+            node->next_transposion_index = NULL_POSITION_TREE_NODE;
+            *index_of_position_with_same_hash = position->node_index;
+            return;
         }
-        out->is_canonical = false;
-        SET_PREVIOUS_TRANSPOSITION_INDEX(out, record->position_node_index);
-        PositionTreeNode*canonical_node = GET_POSITION_TREE_NODE(record->position_node_index);
-        out->next_transposion_index = canonical_node->next_transposion_index;
-        if (out->next_transposion_index != NULL_POSITION_TREE_NODE)
+        PositionTreeNode*position_with_same_hash =
+            GET_POSITION_TREE_NODE(*index_of_position_with_same_hash);
+        if (memcmp(&node->position, &position_with_same_hash->position, sizeof(node->position)))
         {
-            SET_PREVIOUS_TRANSPOSITION_INDEX(GET_POSITION_TREE_NODE(out->next_transposion_index),
-                position->node_index);
+            index_of_position_with_same_hash =
+                &position_with_same_hash->index_of_next_position_with_same_hash;
         }
-        canonical_node->next_transposion_index = position->node_index;
-        out->evaluation = canonical_node->evaluation;
-        out->evaluation_has_been_propagated_to_parents = false;
+        else
+        {
+            node->is_canonical = false;
+            SET_PREVIOUS_TRANSPOSITION_INDEX(node, *index_of_position_with_same_hash);
+            node->next_transposion_index = position_with_same_hash->next_transposion_index;
+            if (node->next_transposion_index != NULL_POSITION_TREE_NODE)
+            {
+                SET_PREVIOUS_TRANSPOSITION_INDEX(
+                    GET_POSITION_TREE_NODE(node->next_transposion_index), position->node_index);
+            }
+            position_with_same_hash->next_transposion_index = position->node_index;
+            node->evaluation = position_with_same_hash->evaluation;
+            node->evaluation_has_been_propagated_to_parents = false;
+            return;
+        }
     }
 }
 
 void decompress_position(Position*out, uint16_t position_tree_node_index)
 {
-    CompressedPosition*position =
-        get_compressed_position(GET_POSITION_TREE_NODE(position_tree_node_index));
+    CompressedPosition*position = &GET_POSITION_TREE_NODE(position_tree_node_index)->position;
     out->node_index = position_tree_node_index;
     uint8_t player_next_piece_index[] = { 1, 17 };
     size_t piece_hash_index = 0;
@@ -987,15 +870,7 @@ void add_move(Position*position, Position*move)
     }
     SET_FIRST_MOVE_NODE_INDEX(node, move->node_index);
     move->active_player_index = !position->active_player_index;
-    compress_position_to_node(move, move_node);
-}
-
-void free_position_tree_node(uint16_t node_index)
-{
-    PositionTreeNode*node = GET_POSITION_TREE_NODE(node_index);
-    node->parent_index = NULL_POSITION_TREE_NODE;
-    node->next_leaf_index = g_index_of_first_free_position_tree_node;
-    g_index_of_first_free_position_tree_node = node_index;
+    compress_position_to_node(move);
 }
 
 bool add_move_if_not_king_hang(Position*position, Position*move)
@@ -1258,19 +1133,18 @@ void propagate_evaluation_to_transpositions(PositionTreeNode*node)
     }
 }
 
-void propagate_evaluation_to_parents(PositionTreeNode*node, uint8_t player_index)
+void propagate_evaluation_to_parents(PositionTreeNode*node)
 {
     node->evaluation_has_been_propagated_to_parents = true;
     while (node->parent_index != NULL_POSITION_TREE_NODE)
     {
+        int16_t new_evaluation = PLAYER_WIN(node->position.active_player_index);
         node = GET_POSITION_TREE_NODE(node->parent_index);
-        int16_t new_evaluation = PLAYER_WIN(player_index);
-        player_index = !player_index;
         uint16_t move_node_index = GET_FIRST_MOVE_NODE_INDEX(node);
         while (move_node_index != NULL_POSITION_TREE_NODE)
         {
             PositionTreeNode*move_node = GET_POSITION_TREE_NODE(move_node_index);
-            if (player_index == PLAYER_INDEX_WHITE)
+            if (node->position.active_player_index == PLAYER_INDEX_WHITE)
             {
                 if (move_node->evaluation > new_evaluation)
                 {
@@ -1299,32 +1173,8 @@ void get_moves(Position*position)
     {
         if (!node->is_leaf)
         {
-            uint16_t move_node_index = GET_FIRST_MOVE_NODE_INDEX(node);
-            PositionTreeNode*move_node = GET_POSITION_TREE_NODE(move_node_index);
+            SET_FIRST_MOVE_NODE_INDEX(node, NULL_POSITION_TREE_NODE);
             node->is_leaf = true;
-            SET_PREVIOUS_LEAF_INDEX(node, GET_PREVIOUS_LEAF_INDEX(move_node));
-            while (true)
-            {
-                if (move_node->next_move_node_index == NULL_POSITION_TREE_NODE)
-                {
-                    SET_NEXT_LEAF_INDEX(node, GET_NEXT_LEAF_INDEX(move_node));
-                    free_position_tree_node(move_node_index);
-                    break;
-                }
-                free_position_tree_node(move_node_index);
-                move_node_index = move_node->next_move_node_index;
-                move_node = GET_POSITION_TREE_NODE(move_node_index);
-            }
-            if (GET_PREVIOUS_LEAF_INDEX(node) != NULL_POSITION_TREE_NODE)
-            {
-                SET_NEXT_LEAF_INDEX(GET_POSITION_TREE_NODE(GET_PREVIOUS_LEAF_INDEX(node)),
-                    position->node_index);
-            }
-            if (GET_NEXT_LEAF_INDEX(node) != NULL_POSITION_TREE_NODE)
-            {
-                SET_PREVIOUS_LEAF_INDEX(GET_POSITION_TREE_NODE(GET_NEXT_LEAF_INDEX(node)),
-                    position->node_index);
-            }
         }
         return;
     }
@@ -1620,7 +1470,7 @@ void get_moves(Position*position)
     }
     node->evaluation = new_evaluation;
     propagate_evaluation_to_transpositions(node);
-    propagate_evaluation_to_parents(node, position->active_player_index);
+    propagate_evaluation_to_parents(node);
 }
 
 bool point_is_in_rect(int32_t x, int32_t y, int32_t min_x, int32_t min_y, uint32_t width,
@@ -1770,65 +1620,48 @@ UpdateTimerStatus update_timer(void)
     UpdateTimerStatus out = UPDATE_TIMER_CONTINUE;
     uint64_t time_since_last_move = get_time() - g_last_move_time;
     uint16_t new_seconds_left;
-    if (time_since_last_move >=
-        g_times_left_as_of_last_move[g_current_position.active_player_index])
+    if (time_since_last_move >= g_times_left_as_of_last_move[g_active_player_index])
     {
         new_seconds_left = 0;
         out |= UPDATE_TIMER_TIME_OUT;
     }
     else
     {
-        new_seconds_left = (g_times_left_as_of_last_move[g_current_position.active_player_index] -
+        new_seconds_left = (g_times_left_as_of_last_move[g_active_player_index] -
             time_since_last_move) / g_counts_per_second;
     }
-    if (new_seconds_left != g_seconds_left[g_current_position.active_player_index])
+    if (new_seconds_left != g_seconds_left[g_active_player_index])
     {
-        g_seconds_left[g_current_position.active_player_index] = new_seconds_left;
+        g_seconds_left[g_active_player_index] = new_seconds_left;
         out |= UPDATE_TIMER_REDRAW;
     }
     return out;
 }
 
-uint16_t get_first_tree_leaf_index(uint16_t root_node_index)
+bool make_position_current(void)
 {
-    while (true)
+    for (size_t i = 0; i < ARRAY_COUNT(g_tree_position_buckets); ++i)
     {
-        PositionTreeNode*node = GET_POSITION_TREE_NODE(root_node_index);
-        if (node->is_leaf)
-        {
-            return root_node_index;
-        }
-        root_node_index = GET_FIRST_MOVE_NODE_INDEX(node);
+        g_tree_position_buckets[i] = NULL_POSITION_TREE_NODE;
     }
-}
-
-uint16_t get_last_tree_leaf_index(uint16_t root_node_index)
-{
-    PositionTreeNode*node = GET_POSITION_TREE_NODE(root_node_index);
-    if (node->is_leaf)
-    {
-        return root_node_index;
-    }
-    uint16_t out = GET_FIRST_MOVE_NODE_INDEX(node);
-    while (true)
-    {
-        node = GET_POSITION_TREE_NODE(out);
-        if (node->next_move_node_index == NULL_POSITION_TREE_NODE)
-        {
-            if (node->is_leaf)
-            {
-                return out;
-            }
-            else
-            {
-                out = GET_FIRST_MOVE_NODE_INDEX(node);
-            }
-        }
-        else
-        {
-            out = node->next_move_node_index;
-        }
-    }
+    g_index_of_first_free_position_tree_node = 1;
+    Position*position = g_current_position + g_active_player_index;
+    position->node_index = 0;
+    g_position_tree_nodes->is_leaf = true;
+    g_position_tree_nodes->moves_have_been_found = false;
+    g_position_tree_nodes->is_canonical = true;
+    g_position_tree_nodes->evaluation_has_been_propagated_to_parents = true;
+    compress_position_to_node(position);
+    g_position_tree_nodes->parent_index = NULL_POSITION_TREE_NODE;
+    SET_PREVIOUS_LEAF_INDEX(g_position_tree_nodes, NULL_POSITION_TREE_NODE);
+    SET_NEXT_LEAF_INDEX(g_position_tree_nodes, NULL_POSITION_TREE_NODE);
+    g_position_tree_nodes->next_move_node_index = NULL_POSITION_TREE_NODE;
+    g_first_leaf_index = 0;
+    get_moves(position);
+    g_next_leaf_to_evaluate_index = g_first_leaf_index;
+    g_selected_piece_index = NULL_PIECE;
+    g_run_engine = true;
+    return archive_position(&g_position_tree_nodes->position);
 }
 
 typedef enum GUIAction
@@ -1847,11 +1680,10 @@ GUIAction end_turn(void)
 {
     uint64_t move_time = get_time();
     uint64_t time_since_last_move = move_time - g_last_move_time;
-    uint64_t*time_left_as_of_last_move =
-        g_times_left_as_of_last_move + g_current_position.active_player_index;
+    uint64_t*time_left_as_of_last_move = g_times_left_as_of_last_move + g_active_player_index;
     if (time_since_last_move >= *time_left_as_of_last_move)
     {
-        g_seconds_left[g_current_position.active_player_index] = 0;
+        g_seconds_left[g_active_player_index] = 0;
         return ACTION_FLAG;
     }
     *time_left_as_of_last_move -= time_since_last_move;
@@ -1863,97 +1695,62 @@ GUIAction end_turn(void)
     {
         *time_left_as_of_last_move = g_max_time;
     }
-    g_seconds_left[g_current_position.active_player_index] =
-        *time_left_as_of_last_move / g_counts_per_second;
+    g_seconds_left[g_active_player_index] = *time_left_as_of_last_move / g_counts_per_second;
     g_last_move_time = move_time;
     g_selected_piece_index = NULL_PIECE;
-    uint16_t selected_move_node_index = *g_selected_move_node_index;
-    PositionTreeNode*move_node = GET_POSITION_TREE_NODE(selected_move_node_index);
-    *g_selected_move_node_index = move_node->next_move_node_index;
-    move_node->parent_index = NULL_POSITION_TREE_NODE;
-    if (GET_FIRST_MOVE_NODE_INDEX(GET_POSITION_TREE_NODE(g_current_position.node_index)) ==
-        NULL_POSITION_TREE_NODE)
-    {
-        free_position_tree_node(g_current_position.node_index);
-    }
-    else
-    {
-        uint16_t first_leaf_index = get_first_tree_leaf_index(selected_move_node_index);
-        PositionTreeNode*move_tree_first_leaf = GET_POSITION_TREE_NODE(first_leaf_index);
-        PositionTreeNode*move_tree_last_leaf =
-            GET_POSITION_TREE_NODE(get_last_tree_leaf_index(selected_move_node_index));
-        if (GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf) != NULL_POSITION_TREE_NODE)
-        {
-            SET_NEXT_LEAF_INDEX(
-                GET_POSITION_TREE_NODE(GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf)),
-                GET_NEXT_LEAF_INDEX(move_tree_last_leaf));
-        }
-        if (GET_NEXT_LEAF_INDEX(move_tree_last_leaf) != NULL_POSITION_TREE_NODE)
-        {
-            SET_PREVIOUS_LEAF_INDEX(GET_POSITION_TREE_NODE(
-                GET_NEXT_LEAF_INDEX(move_tree_last_leaf)),
-                GET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf));
-            SET_NEXT_LEAF_INDEX(move_tree_last_leaf, NULL_POSITION_TREE_NODE);
-        }
-        SET_PREVIOUS_LEAF_INDEX(move_tree_first_leaf, NULL_POSITION_TREE_NODE);
-        g_first_leaf_index = first_leaf_index;
-        first_leaf_index = get_first_tree_leaf_index(g_current_position.node_index);
-        SET_PREVIOUS_LEAF_INDEX(GET_POSITION_TREE_NODE(first_leaf_index), NULL_POSITION_TREE_NODE);
-        SET_NEXT_LEAF_INDEX(
-            GET_POSITION_TREE_NODE(get_last_tree_leaf_index(g_current_position.node_index)),
-            g_index_of_first_free_position_tree_node);
-        g_index_of_first_free_position_tree_node = first_leaf_index;
-    }
-    uint8_t*player_captured_piece_counts =
-        g_captured_piece_counts[!g_current_position.active_player_index];
-    uint8_t player_pieces_index = PLAYER_PIECES_INDEX(!g_current_position.active_player_index);
+    uint8_t*player_captured_piece_counts = g_captured_piece_counts[!g_active_player_index];
+    uint8_t player_pieces_index = PLAYER_PIECES_INDEX(!g_active_player_index);
     uint8_t max_piece_index = player_pieces_index + 16;
+    Position*current_position = g_current_position + g_active_player_index;
     for (uint8_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
     {
-        Piece piece = g_current_position.pieces[piece_index];
+        Piece piece = current_position->pieces[piece_index];
         if (piece.square_index != NULL_SQUARE)
         {
-            ++player_captured_piece_counts[g_current_position.pieces[piece_index].piece_type];
+            ++player_captured_piece_counts[current_position->pieces[piece_index].piece_type];
         }
     }
-    decompress_position(&g_current_position, selected_move_node_index);
+    g_active_player_index = !g_active_player_index;
+    current_position = g_current_position + g_active_player_index;
+    decompress_position(current_position, g_selected_move_node_index);
     for (uint8_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
     {
-        Piece piece = g_current_position.pieces[piece_index];
+        Piece piece = current_position->pieces[piece_index];
         if (piece.square_index != NULL_SQUARE)
         {
-            --player_captured_piece_counts[g_current_position.pieces[piece_index].piece_type];
+            --player_captured_piece_counts[current_position->pieces[piece_index].piece_type];
         }
     }
-    if (g_current_position.reset_draw_by_50_count)
+    PositionTreeNode*selected_move_node = g_position_tree_nodes + g_selected_move_node_index;
+    g_position_tree_nodes->evaluation = selected_move_node->evaluation;
+    g_position_tree_nodes->reset_draw_by_50_count = selected_move_node->reset_draw_by_50_count;
+    if (current_position->reset_draw_by_50_count)
     {
         g_draw_by_50_count = 0;
         ++g_played_position_generation;
     }
-    ++g_draw_by_50_count;
-    if (!move_node->moves_have_been_found)
+    if (make_position_current())
     {
-        get_moves(&g_current_position);
-    }
-    if (move_node->is_leaf)
-    {
-        if (move_node->evaluation == PLAYER_WIN(!g_current_position.active_player_index))
+        if (g_position_tree_nodes->is_leaf)
         {
-            return ACTION_CHECKMATE;
+            if (g_position_tree_nodes->evaluation == PLAYER_WIN(!g_active_player_index))
+            {
+                g_run_engine = false;
+                return ACTION_CHECKMATE;
+            }
+            else
+            {
+                g_run_engine = false;
+                return ACTION_STALEMATE;
+            }
         }
-        else
-        {
-            return ACTION_STALEMATE;
-        }
-    }
-    g_next_leaf_to_evaluate_index = g_first_leaf_index;
-    if (archive_played_position(get_compressed_position(move_node)))
-    {
+        ++g_draw_by_50_count;
         g_run_engine = true;
         return ACTION_REDRAW;
     }
     else
     {
+        g_run_engine = false;
         return ACTION_REPETITION_DRAW;
     }
 }
@@ -1985,8 +1782,7 @@ GUIAction do_engine_iteration(void)
             }
             else if (!node->evaluation_has_been_propagated_to_parents)
             {
-                propagate_evaluation_to_parents(node,
-                    get_compressed_position(node)->active_player_index);
+                propagate_evaluation_to_parents(node);
             }
             if (first_leaf_checked_index == GET_NEXT_LEAF_INDEX(node))
             {
@@ -1998,16 +1794,15 @@ GUIAction do_engine_iteration(void)
     }
     if (!g_run_engine)
     {
-        if (g_current_position.active_player_index == g_engine_player_index)
+        if (g_active_player_index == g_engine_player_index)
         {
             int64_t best_evaluation = PLAYER_WIN(!g_engine_player_index);
-            PositionTreeNode*current_node = GET_POSITION_TREE_NODE(g_current_position.node_index);
-            ASSERT(!current_node->is_leaf);
-            uint16_t*move_node_index = &current_node->first_move_node_index;
+            ASSERT(!g_position_tree_nodes->is_leaf);
+            uint16_t move_node_index = g_position_tree_nodes->first_move_node_index;
             g_selected_move_node_index = move_node_index;
-            while (*move_node_index != NULL_POSITION_TREE_NODE)
+            while (move_node_index != NULL_POSITION_TREE_NODE)
             {
-                PositionTreeNode*move_node = GET_POSITION_TREE_NODE(*move_node_index);
+                PositionTreeNode*move_node = GET_POSITION_TREE_NODE(move_node_index);
                 if (g_engine_player_index == PLAYER_INDEX_WHITE)
                 {
                     if (move_node->evaluation > best_evaluation)
@@ -2021,7 +1816,7 @@ GUIAction do_engine_iteration(void)
                     best_evaluation = move_node->evaluation;
                     g_selected_move_node_index = move_node_index;
                 }
-                move_node_index = &move_node->next_move_node_index;
+                move_node_index = move_node->next_move_node_index;
             }
             return end_turn();
         }
@@ -2901,7 +2696,7 @@ bool main_window_handle_left_mouse_button_down(int32_t cursor_x, int32_t cursor_
         uint8_t board_base_id = window->controls[MAIN_WINDOW_BOARD].base_id;
         if (window->hovered_control_id >= board_base_id &&
             window->hovered_control_id < board_base_id + 64 &&
-            (g_current_position.active_player_index == g_engine_player_index || g_is_promoting))
+            (g_active_player_index == g_engine_player_index || g_is_promoting))
         {
             window->clicked_control_id = NULL_CONTROL;
         }
@@ -2943,24 +2738,24 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
         {
             uint8_t square_index =
                 SCREEN_SQUARE_INDEX(id - window->controls[MAIN_WINDOW_BOARD].base_id);
-            uint8_t selected_piece_index = g_current_position.squares[square_index];
-            if (PLAYER_INDEX(selected_piece_index) == g_current_position.active_player_index)
+            Position*current_position = g_current_position + g_active_player_index;
+            uint8_t selected_piece_index = current_position->squares[square_index];
+            if (PLAYER_INDEX(selected_piece_index) == g_active_player_index)
             {
-                g_selected_move_node_index =
-                    &GET_POSITION_TREE_NODE(g_current_position.node_index)->first_move_node_index;
-                while (*g_selected_move_node_index != NULL_POSITION_TREE_NODE)
+                g_selected_move_node_index = g_position_tree_nodes->first_move_node_index;
+                while (g_selected_move_node_index != NULL_POSITION_TREE_NODE)
                 {
                     Position move;
-                    decompress_position(&move, *g_selected_move_node_index);
+                    decompress_position(&move, g_selected_move_node_index);
                     uint8_t source_square = move.squares[square_index];
                     if (source_square == NULL_PIECE || move.pieces[source_square].piece_type !=
-                        g_current_position.pieces[selected_piece_index].piece_type)
+                        current_position->pieces[selected_piece_index].piece_type)
                     {
                         g_selected_piece_index = selected_piece_index;
                         return ACTION_REDRAW;
                     }
                     g_selected_move_node_index =
-                        &GET_POSITION_TREE_NODE(*g_selected_move_node_index)->next_move_node_index;
+                        GET_POSITION_TREE_NODE(g_selected_move_node_index)->next_move_node_index;
                 }
             }
         }
@@ -2974,11 +2769,11 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                 PieceType selected_piece_type =
                     g_promotion_options[id - promotion_selector_base_id];
                 Position move;
-                decompress_position(&move, *g_selected_move_node_index);
-                PositionTreeNode*move_node = GET_POSITION_TREE_NODE(*g_selected_move_node_index);
+                decompress_position(&move, g_selected_move_node_index);
+                PositionTreeNode*move_node = GET_POSITION_TREE_NODE(g_selected_move_node_index);
                 while (move.pieces[g_selected_piece_index].piece_type != selected_piece_type)
                 {
-                    g_selected_move_node_index = &move_node->next_move_node_index;
+                    g_selected_move_node_index = move_node->next_move_node_index;
                     move_node = GET_POSITION_TREE_NODE(move_node->next_move_node_index);
                 }
                 end_turn();
@@ -2987,19 +2782,18 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
             else
             {
                 Piece current_position_selected_piece =
-                    g_current_position.pieces[g_selected_piece_index];
+                    g_current_position[g_active_player_index].pieces[g_selected_piece_index];
                 uint8_t square_index =
                     SCREEN_SQUARE_INDEX(id - window->controls[MAIN_WINDOW_BOARD].base_id);
                 if (current_position_selected_piece.square_index != square_index)
                 {
-                    uint16_t*piece_first_move_node_index = g_selected_move_node_index;
+                    uint16_t piece_first_move_node_index = g_selected_move_node_index;
                     do
                     {
                         Position move;
-                        decompress_position(&move, *g_selected_move_node_index);
+                        decompress_position(&move, g_selected_move_node_index);
                         uint8_t destination_square = move.squares[square_index];
-                        if (PLAYER_INDEX(destination_square) ==
-                            g_current_position.active_player_index)
+                        if (PLAYER_INDEX(destination_square) == g_active_player_index)
                         {
                             PieceType moved_piece_type = move.pieces[destination_square].piece_type;
                             if (moved_piece_type == current_position_selected_piece.piece_type)
@@ -3012,9 +2806,9 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                                 return end_turn();
                             }
                         }
-                        g_selected_move_node_index = &GET_POSITION_TREE_NODE(
-                            *g_selected_move_node_index)->next_move_node_index;
-                    } while (*g_selected_move_node_index != NULL_POSITION_TREE_NODE);
+                        g_selected_move_node_index = GET_POSITION_TREE_NODE(g_selected_move_node_index)->
+                            next_move_node_index;
+                    } while (g_selected_move_node_index != NULL_POSITION_TREE_NODE);
                     g_selected_move_node_index = piece_first_move_node_index;
                 }
             }
@@ -3082,9 +2876,10 @@ void draw_player(int32_t captured_pieces_min_y, int32_t timer_text_origin_y, uin
     Control*board = window->controls + MAIN_WINDOW_BOARD;
     uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
     uint8_t max_piece_index = player_pieces_index + 16;
+    Position*current_position = g_current_position + g_active_player_index;
     for (size_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
     {
-        Piece piece = g_current_position.pieces[piece_index];
+        Piece piece = current_position->pieces[piece_index];
         if (piece.square_index != NULL_SQUARE)
         {
             uint8_t screen_square_index = SCREEN_SQUARE_INDEX(piece.square_index);
@@ -3280,7 +3075,7 @@ uint32_t save_game(void*file_memory)
     save_value(&file_memory, &time_since_last_move, &file_size, sizeof(time_since_last_move));
     save_value(&file_memory, &g_time_increment, &file_size, sizeof(g_time_increment));
     CompressedPosition current_position;
-    compress_position(&current_position, &g_current_position);
+    compress_position(&current_position, g_current_position + g_active_player_index);
     file_size += sizeof(CompressedPosition);
     memcpy(file_memory, &current_position, sizeof(CompressedPosition));
     file_memory = (void*)((uintptr_t)file_memory + sizeof(CompressedPosition));
@@ -3293,10 +3088,10 @@ uint32_t save_game(void*file_memory)
     save_value(&file_memory, &g_unique_played_position_count, &file_size,
         sizeof(g_unique_played_position_count));
     ASSERT(file_size == SAVE_FILE_STATIC_PART_SIZE);
-    PlayedPositionRecord*external_records = EXTERNAL_PLAYED_POSITION_RECORDS();
-    for (size_t bucket_index = 0; bucket_index < g_played_position_bucket_count; ++bucket_index)
+    PositionRecord*external_records = EXTERNAL_POSITION_RECORDS();
+    for (size_t bucket_index = 0; bucket_index < g_position_record_bucket_count; ++bucket_index)
     {
-        PlayedPositionRecord*record = g_played_position_records + bucket_index;
+        PositionRecord*record = g_position_records + bucket_index;
         if (record->count && record->generation == g_played_position_generation)
         {
             while (true)
@@ -3318,20 +3113,7 @@ uint32_t save_game(void*file_memory)
     return file_size;
 }
 
-void init_game(void)
-{
-    PositionTreeNode*current_node = GET_POSITION_TREE_NODE(g_current_position.node_index);
-    current_node->parent_index = NULL_POSITION_TREE_NODE;
-    current_node->next_move_node_index = NULL_POSITION_TREE_NODE;
-    SET_PREVIOUS_LEAF_INDEX(current_node, NULL_POSITION_TREE_NODE);
-    SET_NEXT_LEAF_INDEX(current_node, NULL_POSITION_TREE_NODE);
-    get_moves(&g_current_position);
-    g_next_leaf_to_evaluate_index = g_first_leaf_index;
-    archive_played_position(&g_tree_position_records[GET_RECORD_INDEX(current_node)].position);
-    g_selected_piece_index = NULL_PIECE;
-}
-
-bool load_file(void*file_memory, uint32_t file_size)
+bool load_game(void*file_memory, uint32_t file_size)
 {
     uint64_t time_since_last_move;
     if (!load_value(&file_memory, &time_since_last_move, &file_size, sizeof(time_since_last_move)))
@@ -3342,10 +3124,8 @@ bool load_file(void*file_memory, uint32_t file_size)
     {
         return false;
     }
-    PositionTreeNode*current_node = GET_POSITION_TREE_NODE(g_first_leaf_index);
-    load_compressed_position(&file_memory,
-        &g_tree_position_records[GET_RECORD_INDEX(current_node)].position, &file_size);
-    decompress_position(&g_current_position, g_first_leaf_index);
+    load_compressed_position(&file_memory, &g_position_tree_nodes->position, &file_size);
+    g_active_player_index = g_position_tree_nodes->position.active_player_index;
     if (!load_value(&file_memory, &g_times_left_as_of_last_move[0], &file_size,
         sizeof(g_times_left_as_of_last_move[0])))
     {
@@ -3356,7 +3136,7 @@ bool load_file(void*file_memory, uint32_t file_size)
     {
         return false;
     }
-    if (g_times_left_as_of_last_move[g_current_position.active_player_index] < time_since_last_move)
+    if (g_times_left_as_of_last_move[g_active_player_index] < time_since_last_move)
     {
         return false;
     }
@@ -3381,79 +3161,56 @@ bool load_file(void*file_memory, uint32_t file_size)
     {
         position_bucket_count = position_bucket_count << 1;
     }
-    init_played_position_archive(position_bucket_count);
+    init_position_archive(position_bucket_count);
     for (uint16_t i = 0; i < g_unique_played_position_count; ++i)
     {
         CompressedPosition position;
         load_compressed_position(&file_memory, &position, &file_size);
-        archive_played_position(&position);
+        archive_position(&position);
     }
-    init_game();
+    Position*position = g_current_position + g_active_player_index;
+    decompress_position(position, 0);
+    make_position_current();
+    g_seconds_left[g_active_player_index] = (g_times_left_as_of_last_move[g_active_player_index] -
+        time_since_last_move) / g_counts_per_second;
+    g_seconds_left[!g_active_player_index] =
+        g_times_left_as_of_last_move[!g_active_player_index] / g_counts_per_second;
     g_last_move_time = get_time() - time_since_last_move;
+    g_run_engine = true;
     return true;
 }
 
-bool load_game(void*file_memory, uint32_t file_size)
-{
-    for (size_t i = 0; i < ARRAY_COUNT(g_tree_position_buckets); ++i)
-    {
-        g_tree_position_buckets[i] = NULL_POSITION_TREE_NODE;
-    }
-    g_first_leaf_index = allocate_position_tree_node();
-    bool out = load_file(file_memory, file_size);
-    if (out)
-    {
-        g_run_engine = true;
-    }
-    else
-    {
-        free_position_tree_node(g_first_leaf_index);
-    }
-    return out;
-}
-
-void init_pools()
-{
-    g_position_tree_node_pool_cursor = 0;
-    g_index_of_first_free_position_tree_node = NULL_POSITION_TREE_NODE;
-    g_tree_position_record_cursor = 0;
-    g_index_of_first_free_tree_position_record = NULL_POSITION_TREE_NODE;
-}
-
-void free_game(void)
-{
-    FREE_MEMORY(g_played_position_records);
-    init_pools();
-}
-
-void init_piece(PieceType piece_type, uint8_t piece_index, uint8_t square_index,
+void init_piece(Position*position, PieceType piece_type, uint8_t piece_index, uint8_t square_index,
     uint8_t player_index)
 {
     piece_index += PLAYER_PIECES_INDEX(player_index);
-    Piece*piece = g_current_position.pieces + piece_index;
+    Piece*piece = position->pieces + piece_index;
     piece->square_index = square_index;
     piece->piece_type = piece_type;
-    g_current_position.squares[square_index] = piece_index;
+    position->squares[square_index] = piece_index;
 }
 
 void init_new_game(void)
 {
+    g_active_player_index = PLAYER_INDEX_WHITE;
+    Position*current_position = g_current_position + PLAYER_INDEX_WHITE;
     for (uint8_t player_index = 0; player_index < 2; ++player_index)
     {
         uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
         uint8_t rank = KING_RANK(player_index);
-        init_piece(PIECE_KING, 0, SQUARE_INDEX(rank, 4), player_index);
-        init_piece(PIECE_ROOK, 1, SQUARE_INDEX(rank, 0), player_index);
-        init_piece(PIECE_KNIGHT, 2, SQUARE_INDEX(rank, 1), player_index);
-        init_piece(PIECE_BISHOP, 3, SQUARE_INDEX(rank, 2), player_index);
-        init_piece(PIECE_QUEEN, 4, SQUARE_INDEX(rank, 3), player_index);
-        init_piece(PIECE_BISHOP, 5, SQUARE_INDEX(rank, 5), player_index);
-        init_piece(PIECE_KNIGHT, 6, SQUARE_INDEX(rank, 6), player_index);
-        init_piece(PIECE_ROOK, 7, SQUARE_INDEX(rank, 7), player_index);
+        init_piece(current_position, PIECE_KING, 0, SQUARE_INDEX(rank, 4), player_index);
+        init_piece(current_position, PIECE_ROOK, 1, SQUARE_INDEX(rank, 0), player_index);
+        init_piece(current_position, PIECE_KNIGHT, 2, SQUARE_INDEX(rank, 1), player_index);
+        init_piece(current_position, PIECE_BISHOP, 3, SQUARE_INDEX(rank, 2), player_index);
+        init_piece(current_position, PIECE_QUEEN, 4, SQUARE_INDEX(rank, 3), player_index);
+        init_piece(current_position, PIECE_BISHOP, 5, SQUARE_INDEX(rank, 5), player_index);
+        init_piece(current_position, PIECE_KNIGHT, 6, SQUARE_INDEX(rank, 6), player_index);
+        init_piece(current_position, PIECE_ROOK, 7, SQUARE_INDEX(rank, 7), player_index);
         rank += FORWARD_DELTA(player_index);
         for (uint8_t file = 0; file < 8; ++file)
         {
-            init_piece(PIECE_PAWN, 8 + file, SQUARE_INDEX(rank, file), player_index);
+            init_piece(current_position, PIECE_PAWN, 8 + file, SQUARE_INDEX(rank, file),
+                player_index);
         }
         g_seconds_left[player_index] = g_time_control[4].digit + 10 * g_time_control[3].digit +
             60 * g_time_control[2].digit + 600 * g_time_control[1].digit +
@@ -3461,18 +3218,11 @@ void init_new_game(void)
     }
     for (size_t square_index = 16; square_index < 48; ++square_index)
     {
-        g_current_position.squares[square_index] = NULL_PIECE;
+        current_position->squares[square_index] = NULL_PIECE;
     }
-    g_current_position.en_passant_file = FILE_COUNT;
-    g_current_position.active_player_index = PLAYER_INDEX_WHITE;
-    for (size_t i = 0; i < ARRAY_COUNT(g_tree_position_buckets); ++i)
-    {
-        g_tree_position_buckets[i] = NULL_POSITION_TREE_NODE;
-    }
-    g_first_leaf_index = allocate_position_tree_node();
-    compress_position_to_node(&g_current_position, GET_POSITION_TREE_NODE(g_first_leaf_index));
-    init_played_position_archive(32);
-    init_game();
+    current_position->en_passant_file = FILE_COUNT;
+    init_position_archive(32);
+    make_position_current();
     Window*window = g_windows + WINDOW_MAIN;
     window->hovered_control_id = NULL_CONTROL;
     window->clicked_control_id = NULL_CONTROL;
@@ -3494,7 +3244,6 @@ void init(void*font_data, size_t text_font_data_size, size_t icon_font_data_size
     FT_New_Memory_Face(g_freetype_library, (void*)((uintptr_t)font_data + text_font_data_size),
         text_font_data_size, 0, &g_icon_face);
     g_windows[WINDOW_START].controls = g_dialog_controls;
-    init_pools();
     for (size_t i = 0; i < ARRAY_COUNT(g_dpi_datas); ++i)
     {
         g_dpi_datas[i].reference_count = 0;

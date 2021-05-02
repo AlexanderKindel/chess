@@ -82,7 +82,7 @@ void run_game_over_dialog(HWND main_window_handle)
         DestroyWindow(g_dialog_handle);
         VirtualFree(g_windows[WINDOW_PROMOTION].pixels, 0, MEM_RELEASE);
     }
-    free_game();
+    VirtualFree(g_position_records, 0, MEM_RELEASE);
     HWND dialog_handle = CreateWindowEx(WS_EX_TOPMOST, g_start_window_class_name, "Game Over",
         g_dialog_style, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0);
     init_start_window(g_status_data.text, GetDpiForWindow(dialog_handle));
@@ -117,7 +117,7 @@ void handle_turn_action(HWND main_window_handle, GUIAction action)
     {
     case ACTION_CHECKMATE:
     {
-        if (g_current_position.active_player_index == PLAYER_INDEX_WHITE)
+        if (g_active_player_index == PLAYER_INDEX_WHITE)
         {
             g_status_data.text = "Checkmate. Black wins.";
         }
@@ -129,7 +129,7 @@ void handle_turn_action(HWND main_window_handle, GUIAction action)
     }
     case ACTION_FLAG:
     {
-        if (g_current_position.active_player_index == PLAYER_INDEX_WHITE)
+        if (g_active_player_index == PLAYER_INDEX_WHITE)
         {
             g_status_data.text = "White is out of time. Black wins.";
         }
@@ -175,17 +175,14 @@ void run_message_loop(HWND main_window_handle)
             }
             handle_turn_action(main_window_handle, do_engine_iteration());
         }
+        else if (GetMessage(&message, 0, 0, 0))
+        {
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+        }
         else
         {
-            if (GetMessage(&message, 0, 0, 0))
-            {
-                TranslateMessage(&message);
-                DispatchMessage(&message);
-            }
-            else
-            {
-                return;
-            }
+            return;
         }
     }
 }
@@ -443,7 +440,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         }
         if (status & UPDATE_TIMER_TIME_OUT)
         {
-            if (g_current_position.active_player_index == PLAYER_INDEX_WHITE)
+            if (g_active_player_index == PLAYER_INDEX_WHITE)
             {
                 g_status_data.text = "White is out of time. Black wins.";
             }
