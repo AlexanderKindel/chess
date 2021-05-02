@@ -178,11 +178,6 @@ typedef struct PositionTreeNode
         uint16_t first_move_node_index;
     };
     uint16_t next_move_node_index;
-    union
-    {
-        uint16_t position_record_index;
-        uint16_t previous_transposition_index;
-    };
     uint16_t next_transposion_index;
     uint16_t index_of_next_position_with_same_hash;
     bool is_leaf;
@@ -331,12 +326,6 @@ uint16_t get_first_move_node_index(PositionTreeNode*node)
     return node->first_move_node_index;
 }
 
-uint16_t get_previous_transposition_index(PositionTreeNode*node)
-{
-    ASSERT(!node->is_canonical);
-    return node->previous_transposition_index;
-}
-
 void set_previous_leaf_index(PositionTreeNode*node, uint16_t value)
 {
     ASSERT(node->is_leaf);
@@ -355,32 +344,22 @@ void set_first_move_node_index(PositionTreeNode*node, uint16_t value)
     node->first_move_node_index = value;
 }
 
-void set_previous_transposition_index(PositionTreeNode*node, uint16_t value)
-{
-    ASSERT(!node->is_canonical);
-    node->previous_transposition_index = value;
-}
-
 #define GET_POSITION_TREE_NODE(node_index) get_position_tree_node(node_index)
 #define GET_PREVIOUS_LEAF_INDEX(node) get_previous_leaf_index(node)
 #define GET_NEXT_LEAF_INDEX(position_tree_node) get_next_leaf_index(position_tree_node)
 #define GET_FIRST_MOVE_NODE_INDEX(node) get_first_move_node_index(node)
-#define GET_PREVIOUS_TRANSPOSITION_INDEX(node) get_previous_transposition_index(node)
 #define SET_PREVIOUS_LEAF_INDEX(position_tree_node, value) set_previous_leaf_index(position_tree_node, value)
 #define SET_NEXT_LEAF_INDEX(position_tree_node, value) set_next_leaf_index(position_tree_node, value)
 #define SET_FIRST_MOVE_NODE_INDEX(node, value) set_first_move_node_index(node, value)
-#define SET_PREVIOUS_TRANSPOSITION_INDEX(node, value) set_previous_transposition_index(node, value)
 #else
 #define ASSERT(condition)
 #define GET_POSITION_TREE_NODE(node_index) (g_position_tree_nodes + (node_index))
 #define GET_PREVIOUS_LEAF_INDEX(position_tree_node) (position_tree_node)->previous_leaf_index
 #define GET_NEXT_LEAF_INDEX(position_tree_node) (position_tree_node)->next_leaf_index
 #define GET_FIRST_MOVE_NODE_INDEX(node) (node)->first_move_node_index
-#define GET_PREVIOUS_TRANSPOSITION_INDEX(node) (node)->previous_transposition_index
 #define SET_PREVIOUS_LEAF_INDEX(position_tree_node, value) ((position_tree_node)->previous_leaf_index = (value))
 #define SET_NEXT_LEAF_INDEX(position_tree_node, value) ((position_tree_node)->next_leaf_index = (value))
 #define SET_FIRST_MOVE_NODE_INDEX(node, value) ((node)->first_move_node_index = (value))
-#define SET_PREVIOUS_TRANSPOSITION_INDEX(node, value) ((node)->previous_transposition_index = (value))
 #endif
 
 #define PLAYER_INDEX(piece_index) ((piece_index) >> 4)
@@ -769,13 +748,7 @@ void compress_position_to_node(Position*position)
         else
         {
             node->is_canonical = false;
-            SET_PREVIOUS_TRANSPOSITION_INDEX(node, *index_of_position_with_same_hash);
             node->next_transposion_index = position_with_same_hash->next_transposion_index;
-            if (node->next_transposion_index != NULL_POSITION_TREE_NODE)
-            {
-                SET_PREVIOUS_TRANSPOSITION_INDEX(
-                    GET_POSITION_TREE_NODE(node->next_transposion_index), position->node_index);
-            }
             position_with_same_hash->next_transposion_index = position->node_index;
             node->evaluation = position_with_same_hash->evaluation;
             node->evaluation_has_been_propagated_to_parents = false;
