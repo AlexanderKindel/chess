@@ -477,181 +477,269 @@ bool archive_position(CompressedPosition*position)
     return true;
 }
 
-bool piece_attacks_king_square_along_diagonal(Position*position, uint8_t piece_index,
-    uint8_t king_square_index)
+void increment_control_counts_along_half_diagonal(Position*position, int8_t control_counts[64],
+    uint8_t piece_square_index, uint8_t player_index, int8_t rank_delta, int8_t file_delta)
 {
-    Piece attacking_piece = position->pieces[piece_index];
-    int8_t rank_delta = RANK(king_square_index) - RANK(attacking_piece.square_index);
-    int8_t file_delta = FILE(king_square_index) - FILE(attacking_piece.square_index);
-    if (rank_delta != file_delta && rank_delta != -file_delta)
-    {
-        return false;
-    }
-    int8_t square_index_increment;
-    if (RANK(attacking_piece.square_index) < RANK(king_square_index))
-    {
-        square_index_increment = FILE_COUNT;
-    }
-    else
-    {
-        square_index_increment = -FILE_COUNT;
-    }
-    if (FILE(attacking_piece.square_index) < FILE(king_square_index))
-    {
-        square_index_increment += 1;
-    }
-    else
-    {
-        square_index_increment -= 1;
-    }
+    int8_t point = FORWARD_DELTA(!player_index);
+    uint8_t rank = RANK(piece_square_index);
+    uint8_t file = FILE(piece_square_index);
     while (true)
     {
-        attacking_piece.square_index += square_index_increment;
-        if (RANK(attacking_piece.square_index) == RANK(king_square_index))
+        rank += rank_delta;
+        if (rank > 7)
         {
-            return true;
+            return;
         }
-        if (position->squares[attacking_piece.square_index] != NULL_PIECE)
+        file += file_delta;
+        if (file > 7)
         {
-            return false;
+            return;
+        }
+        piece_square_index = SQUARE_INDEX(rank, file);
+        control_counts[piece_square_index] += point;
+        if (position->squares[piece_square_index] != NULL_PIECE)
+        {
+            return;
         }
     }
 }
 
-bool piece_attacks_king_square_along_axis(Position*position, uint8_t piece_index,
-    uint8_t king_square_index)
+void increment_control_counts_along_diagonals(Position*position, int8_t control_counts[64],
+    uint8_t piece_square_index, uint8_t player_index)
 {
-    Piece attacking_piece = position->pieces[piece_index];
-    int8_t square_index_increment;
-    if (RANK(king_square_index) == RANK(attacking_piece.square_index))
-    {
-        if (FILE(attacking_piece.square_index) < FILE(king_square_index))
-        {
-            square_index_increment = 1;
-        }
-        else
-        {
-            square_index_increment = -1;
-        }
-    }
-    else if (FILE(king_square_index) == FILE(attacking_piece.square_index))
-    {
-        if (RANK(attacking_piece.square_index) < RANK(king_square_index))
-        {
-            square_index_increment = 8;
-        }
-        else
-        {
-            square_index_increment = -8;
-        }
-    }
-    else
-    {
-        return false;
-    }
+    increment_control_counts_along_half_diagonal(position, control_counts, piece_square_index,
+        player_index, 1, 1);
+    increment_control_counts_along_half_diagonal(position, control_counts, piece_square_index,
+        player_index, 1, -1);
+    increment_control_counts_along_half_diagonal(position, control_counts, piece_square_index,
+        player_index, -1, 1);
+    increment_control_counts_along_half_diagonal(position, control_counts, piece_square_index,
+        player_index, -1, -1);
+}
+
+void increment_control_counts_along_half_rank(Position*position, int8_t control_counts[64],
+    uint8_t piece_square_index, uint8_t player_index, int8_t delta)
+{
+    int8_t point = FORWARD_DELTA(!player_index);
+    uint8_t rank = RANK(piece_square_index);
+    uint8_t file = FILE(piece_square_index);
     while (true)
     {
-        attacking_piece.square_index += square_index_increment;
-        if (attacking_piece.square_index == king_square_index)
+        file += delta;
+        if (file > 7)
         {
-            return true;
+            return;
         }
-        if (position->squares[attacking_piece.square_index] != NULL_PIECE)
+        piece_square_index = SQUARE_INDEX(rank, file);
+        control_counts[piece_square_index] += point;
+        if (position->squares[piece_square_index] != NULL_PIECE)
         {
-            return false;
+            return;
         }
     }
 }
 
-uint8_t abs_delta(uint8_t coord_a, uint8_t coord_b)
+void increment_control_counts_along_half_file(Position*position, int8_t control_counts[64],
+    uint8_t piece_square_index, uint8_t player_index, int8_t delta)
 {
-    if (coord_a > coord_b)
+    int8_t point = FORWARD_DELTA(!player_index);
+    uint8_t rank = RANK(piece_square_index);
+    uint8_t file = FILE(piece_square_index);
+    while (true)
     {
-        return coord_a - coord_b;
+        rank += delta;
+        if (rank > 7)
+        {
+            return;
+        }
+        piece_square_index = SQUARE_INDEX(rank, file);
+        control_counts[piece_square_index] += point;
+        if (position->squares[piece_square_index] != NULL_PIECE)
+        {
+            return;
+        }
     }
-    return coord_b - coord_a;
 }
 
-bool player_attacks_king_square(Position*position, uint8_t player_index, uint8_t king_square_index)
+void increment_control_counts_along_axes(Position*position, int8_t control_counts[64],
+    uint8_t piece_square_index, uint8_t player_index)
 {
-    uint8_t army_base_piece_index = 16 * player_index;
-    uint8_t max_piece_index = army_base_piece_index + 16;
-    for (size_t piece_index = army_base_piece_index; piece_index < max_piece_index; ++piece_index)
+    increment_control_counts_along_half_rank(position, control_counts, piece_square_index,
+        player_index, 1);
+    increment_control_counts_along_half_rank(position, control_counts, piece_square_index,
+        player_index, -1);
+    increment_control_counts_along_half_file(position, control_counts, piece_square_index,
+        player_index, 1);
+    increment_control_counts_along_half_file(position, control_counts, piece_square_index,
+        player_index, -1);
+}
+
+size_t add_knight_destination_square_indices(uint8_t destination_square_indices[8],
+    uint8_t knight_square_index)
+{
+    size_t count = 0;
+    uint8_t rank = RANK(knight_square_index);
+    uint8_t file = FILE(knight_square_index);
+    if (file > 0)
     {
-        Piece attacking_piece = position->pieces[piece_index];
-        if (attacking_piece.square_index == NULL_SQUARE)
+        if (rank > 1)
+        {
+            destination_square_indices[count] = SQUARE_INDEX(rank - 2, file - 1);
+            ++count;
+        }
+        if (rank < 6)
+        {
+            destination_square_indices[count] = SQUARE_INDEX(rank + 2, file - 1);
+            ++count;
+        }
+        if (file > 1)
+        {
+            if (rank > 0)
+            {
+                destination_square_indices[count] = SQUARE_INDEX(rank - 1, file - 2);
+                ++count;
+            }
+            if (rank < 7)
+            {
+                destination_square_indices[count] = SQUARE_INDEX(rank + 1, file - 2);
+                ++count;
+            }
+        }
+    }
+    if (file < 7)
+    {
+        if (rank > 1)
+        {
+            destination_square_indices[count] = SQUARE_INDEX(rank - 2, file + 1);
+            ++count;
+        }
+        if (rank < 6)
+        {
+            destination_square_indices[count] = SQUARE_INDEX(rank + 2, file + 1);
+            ++count;
+        }
+        if (file < 6)
+        {
+            if (rank > 0)
+            {
+                destination_square_indices[count] = SQUARE_INDEX(rank - 1, file + 2);
+                ++count;
+            }
+            if (rank < 7)
+            {
+                destination_square_indices[count] = SQUARE_INDEX(rank + 1, file + 2);
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king_rank_or_file)
+{
+    size_t count = 0;
+    if (king_rank_or_file)
+    {
+        move_ranks_or_files[count] = king_rank_or_file - 1;
+        ++count;
+    }
+    move_ranks_or_files[count] = king_rank_or_file;
+    ++count;
+    if (king_rank_or_file < 7)
+    {
+        move_ranks_or_files[count] = king_rank_or_file + 1;
+        ++count;
+    }
+    return count;
+}
+
+void increment_square_control_counts(Position*position, int8_t control_counts[64],
+    uint8_t player_index)
+{
+    uint8_t player_pieces_index = PLAYER_PIECES_INDEX(player_index);
+    uint8_t max_piece_index = player_pieces_index + 16;
+    for (uint8_t piece_index = player_pieces_index; piece_index < max_piece_index; ++piece_index)
+    {
+        Piece piece = position->pieces[piece_index];
+        if (piece.square_index == NULL_SQUARE)
         {
             continue;
         }
-        switch (attacking_piece.piece_type)
+        uint8_t player_index = PLAYER_INDEX(piece_index);
+        switch (piece.piece_type)
         {
         case PIECE_PAWN:
         {
-            uint8_t king_file = FILE(king_square_index);
-            if (abs_delta(king_file, FILE(attacking_piece.square_index)) == 1 &&
-                RANK(king_square_index) == RANK(attacking_piece.square_index) +
-                    FORWARD_DELTA(position->active_player_index))
+            int8_t forward_delta = FORWARD_DELTA(player_index);
+            uint8_t rank = RANK(piece.square_index) + forward_delta;
+            if (rank < 8)
             {
-                return true;
+                uint8_t file = FILE(piece.square_index);
+                if (file)
+                {
+                    control_counts[SQUARE_INDEX(rank, file - 1)] -= forward_delta;
+                }
+                if (file < 7)
+                {
+                    control_counts[SQUARE_INDEX(rank, file + 1)] -= forward_delta;
+                }
             }
             break;
         }
         case PIECE_BISHOP:
         {
-            if (piece_attacks_king_square_along_diagonal(position, piece_index, king_square_index))
-            {
-                return true;
-            }
+            increment_control_counts_along_diagonals(position, control_counts, piece.square_index,
+                player_index);
             break;
         }
         case PIECE_KING:
         {
-            if (abs_delta(RANK(king_square_index), RANK(attacking_piece.square_index)) <= 1 &&
-                abs_delta(FILE(king_square_index), FILE(attacking_piece.square_index)) <= 1)
+            uint8_t move_ranks[3];
+            size_t move_rank_count =
+                add_king_move_ranks_or_files(move_ranks, RANK(piece.square_index));
+            uint8_t move_files[3];
+            size_t move_file_count =
+                add_king_move_ranks_or_files(move_files, FILE(piece.square_index));
+            int8_t point = FORWARD_DELTA(!player_index);
+            for (size_t rank_index = 0; rank_index < move_rank_count; ++rank_index)
             {
-                return true;
+                for (size_t file_index = 0; file_index < move_file_count; ++file_index)
+                {
+                    control_counts[SQUARE_INDEX(move_ranks[rank_index], move_files[file_index])] +=
+                        point;
+                }
             }
+            control_counts[piece.square_index] -= point;
             break;
         }
         case PIECE_KNIGHT:
         {
-            uint8_t rank_delta =
-                abs_delta(RANK(king_square_index), RANK(attacking_piece.square_index));
-            uint8_t file_delta =
-                abs_delta(FILE(king_square_index), FILE(attacking_piece.square_index));
-            if ((rank_delta == 2 && file_delta == 1) || (rank_delta == 1 && file_delta == 2))
+            int8_t point = FORWARD_DELTA(!player_index);
+            uint8_t destination_square_indices[8];
+            size_t square_count = add_knight_destination_square_indices(destination_square_indices,
+                piece.square_index);
+            for (size_t i = 0; i < square_count; ++i)
             {
-                return true;
+                control_counts[destination_square_indices[i]] += point;
             }
             break;
         }
         case PIECE_ROOK:
         {
-            if (piece_attacks_king_square_along_axis(position, piece_index, king_square_index))
-            {
-                return true;
-            }
+            increment_control_counts_along_axes(position, control_counts, piece.square_index,
+                player_index);
             break;
         }
         case PIECE_QUEEN:
         {
-            if (piece_attacks_king_square_along_diagonal(position, piece_index,
-                king_square_index) ||
-                piece_attacks_king_square_along_axis(position, piece_index, king_square_index))
-            {
-                return true;
-            }
+            increment_control_counts_along_diagonals(position, control_counts, piece.square_index,
+                player_index);
+            increment_control_counts_along_axes(position, control_counts, piece.square_index,
+                player_index);
             break;
         }
         }
     }
-    return false;
-}
-
-bool player_is_checked(Position*position, uint8_t player_index)
-{
-    return player_attacks_king_square(position, !player_index,
-        position->pieces[PLAYER_PIECES_INDEX(player_index)].square_index);
 }
 
 void capture_piece(Position*position, uint8_t piece_index)
@@ -721,7 +809,7 @@ void compress_position(CompressedPosition*out, Position*position)
     out->active_player_index = position->active_player_index;
 }
 
-void compress_position_to_node(Position*position)
+void compress_position_to_node(Position*position, int16_t evaluation)
 {
     PositionTreeNode*node = GET_POSITION_TREE_NODE(position->node_index);
     node->reset_draw_by_50_count = position->reset_draw_by_50_count;
@@ -735,6 +823,7 @@ void compress_position_to_node(Position*position)
             node->is_canonical = true;
             node->index_of_next_position_with_same_hash = NULL_POSITION_TREE_NODE;
             node->next_transposion_index = NULL_POSITION_TREE_NODE;
+            node->evaluation = evaluation;
             *index_of_position_with_same_hash = position->node_index;
             return;
         }
@@ -806,7 +895,7 @@ void decompress_position(Position*out, uint16_t position_tree_node_index)
     out->active_player_index = position->active_player_index;
 }
 
-void add_move(Position*position, Position*move)
+void add_move(Position*position, Position*move, int16_t evaluation)
 {
     move->node_index = allocate_position_tree_node();
     PositionTreeNode*move_node = GET_POSITION_TREE_NODE(move->node_index);
@@ -842,27 +931,94 @@ void add_move(Position*position, Position*move)
             move->node_index);
     }
     SET_FIRST_MOVE_NODE_INDEX(node, move->node_index);
-    move->active_player_index = !position->active_player_index;
-    compress_position_to_node(move);
+    compress_position_to_node(move, evaluation);
+}
+
+uint8_t abs_delta(uint8_t a, uint8_t b)
+{
+    if (a > b)
+    {
+        return a - b;
+    }
+    return b - a;
+}
+
+int32_t min32(int32_t a, int32_t b)
+{
+    if (a < b)
+    {
+        return a;
+    }
+    return b;
+}
+
+uint32_t max32(uint32_t a, uint32_t b)
+{
+    if (a > b)
+    {
+        return a;
+    }
+    return b;
+}
+
+int16_t get_king_safety_evaluation(Position*position, int8_t square_control_counts[64])
+{
+    increment_square_control_counts(position, square_control_counts,
+        !position->active_player_index);
+    uint8_t white_king_square_index =
+        position->pieces[PLAYER_PIECES_INDEX(PLAYER_INDEX_WHITE)].square_index;
+    uint8_t white_king_rank = RANK(white_king_square_index);
+    uint8_t white_king_file = FILE(white_king_square_index);
+    uint8_t black_king_square_index =
+        position->pieces[PLAYER_PIECES_INDEX(PLAYER_INDEX_BLACK)].square_index;
+    uint8_t black_king_rank = RANK(black_king_square_index);
+    uint8_t black_king_file = FILE(black_king_square_index);
+    int16_t out = 0;
+    for (uint8_t rank = 0; rank < 8; ++rank)
+    {
+        uint16_t white_rank_delta = abs_delta(rank, white_king_rank);
+        uint16_t black_rank_delta = abs_delta(rank, black_king_rank);
+        for (uint8_t file = 0; file < 8; ++file)
+        {
+            int16_t control_count = square_control_counts[SQUARE_INDEX(rank, file)];
+            int16_t abs_count;
+            int16_t sign;
+            if (control_count < 0)
+            {
+                abs_count = -control_count;
+                sign = -1;
+            }
+            else
+            {
+                abs_count = control_count;
+                sign = 1;
+            }
+            out += (14 - (max32(white_rank_delta, abs_delta(file, white_king_file)) +
+                max32(black_rank_delta, abs_delta(file, black_king_file)))) *
+                sign * (16 * abs_count - (abs_count * (abs_count - 1)) / 2);
+        }
+    }
+    return out;
 }
 
 bool add_move_if_not_king_hang(Position*position, Position*move)
 {
-    if (player_is_checked(move, position->active_player_index))
+    int8_t control_counts[64] = { 0 };
+    increment_square_control_counts(move, control_counts, move->active_player_index);
+    if (control_counts
+        [position->pieces[PLAYER_PIECES_INDEX(position->active_player_index)].square_index])
     {
         return false;
     }
-    else
-    {
-        add_move(position, move);
-        return true;
-    }
+    add_move(position, move, get_king_safety_evaluation(move, control_counts));
+    return true;
 }
 
 void copy_position(Position*position, Position*out)
 {
     memcpy(&out->squares, &position->squares, sizeof(position->squares));
     memcpy(&out->pieces, &position->pieces, sizeof(position->pieces));
+    out->active_player_index = !position->active_player_index;
     out->en_passant_file = FILE_COUNT;
     out->castling_rights_lost = position->castling_rights_lost;
     out->reset_draw_by_50_count = false;
@@ -870,13 +1026,14 @@ void copy_position(Position*position, Position*out)
 
 typedef enum MoveAttemptStatus
 {
-    MOVE_ATTEMPT_FAILURE,
+    MOVE_ATTEMPT_OBSTRUCTION,
+    MOVE_ATTEMPT_HANG,
     MOVE_ATTEMPT_MOVE,
     MOVE_ATTEMPT_CAPTURE
 } MoveAttemptStatus;
 
-MoveAttemptStatus move_piece_if_legal(Position*position, Position*move, uint8_t piece_index,
-    uint8_t destination_square_index)
+MoveAttemptStatus attempt_piece_move(Position*position, Position*move, int8_t control_counts[64],
+    uint8_t piece_index, uint8_t destination_square_index)
 {
     uint8_t destination_square = position->squares[destination_square_index];
     MoveAttemptStatus out;
@@ -893,12 +1050,15 @@ MoveAttemptStatus move_piece_if_legal(Position*position, Position*move, uint8_t 
     }
     else
     {
-        return MOVE_ATTEMPT_FAILURE;
+        return MOVE_ATTEMPT_OBSTRUCTION;
     }
     move_piece(move, piece_index, destination_square_index);
-    if (player_is_checked(move, position->active_player_index))
+    memset(control_counts, 0, 64);
+    increment_square_control_counts(move, control_counts, move->active_player_index);
+    if (control_counts
+        [move->pieces[PLAYER_PIECES_INDEX(position->active_player_index)].square_index])
     {
-        return MOVE_ATTEMPT_FAILURE;
+        return MOVE_ATTEMPT_HANG;
     }
     return out;
 }
@@ -906,19 +1066,27 @@ MoveAttemptStatus move_piece_if_legal(Position*position, Position*move, uint8_t 
 MoveAttemptStatus move_piece_and_add_as_move(Position*position, uint8_t piece_index,
     uint8_t destination_square_index)
 {
+    int8_t control_counts[64];
     Position move;
     MoveAttemptStatus out =
-        move_piece_if_legal(position, &move, piece_index, destination_square_index);
-    if (out)
+        attempt_piece_move(position, &move, control_counts, piece_index, destination_square_index);
+    switch (out)
     {
-        add_move(position, &move);
+    case MOVE_ATTEMPT_MOVE:
+    case MOVE_ATTEMPT_CAPTURE:
+    {
+        add_move(position, &move, get_king_safety_evaluation(&move, control_counts));
+    }
     }
     return out;
 }
 
 void add_pawn_move_with_promotions(Position*position, Position*move, uint8_t piece_index)
 {
-    if (!player_is_checked(move, position->active_player_index))
+    int8_t control_counts[64] = { 0 };
+    increment_square_control_counts(move, control_counts, move->active_player_index);
+    if (!control_counts
+        [position->pieces[PLAYER_PIECES_INDEX(position->active_player_index)].square_index])
     {
         if (RANK(move->pieces[piece_index].square_index) == KING_RANK(!PLAYER_INDEX(piece_index)))
         {
@@ -926,12 +1094,16 @@ void add_pawn_move_with_promotions(Position*position, Position*move, uint8_t pie
             for (size_t i = 0; i < ARRAY_COUNT(g_promotion_options); ++i)
             {
                 move->pieces[piece_index].piece_type = g_promotion_options[i];
-                add_move(position, move);
+                int8_t control_counts_copy[64];
+                memcpy(control_counts_copy, control_counts, sizeof(control_counts));
+                add_move(position, move, get_king_safety_evaluation(move, control_counts_copy));
             }
         }
         else
         {
-            add_move(position, move);
+            int8_t control_counts_copy[64];
+            memcpy(control_counts_copy, control_counts, sizeof(control_counts));
+            add_move(position, move, get_king_safety_evaluation(move, control_counts_copy));
         }
     }
 }
@@ -972,12 +1144,28 @@ void add_half_diagonal_moves(Position*position, uint8_t piece_index, int8_t rank
     uint8_t destination_square_index = position->pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
-    do
+    while (true)
     {
         destination_rank += rank_delta;
+        if (destination_rank > 7)
+        {
+            return;
+        }
         destination_file += file_delta;
-    } while (destination_rank < 8 && destination_file < 8 && move_piece_and_add_as_move(position,
-        piece_index, SQUARE_INDEX(destination_rank, destination_file)) == MOVE_ATTEMPT_MOVE);
+        if (destination_file > 7)
+        {
+            return;
+        }
+        switch (move_piece_and_add_as_move(position, piece_index,
+            SQUARE_INDEX(destination_rank, destination_file)))
+        {
+        case MOVE_ATTEMPT_CAPTURE:
+        case MOVE_ATTEMPT_OBSTRUCTION:
+        {
+            return;
+        }
+        }
+    }
 }
 
 void add_diagonal_moves(Position*position, uint8_t piece_index)
@@ -999,31 +1187,28 @@ void add_half_horizontal_moves(Position*position, uint8_t piece_index, int8_t de
         destination_file += delta;
         if (destination_file > 7)
         {
-            break;
+            return;
         }
+        int8_t control_counts[64];
         Position move;
-        MoveAttemptStatus status = move_piece_if_legal(position, &move, piece_index,
+        MoveAttemptStatus status = attempt_piece_move(position, &move, control_counts, piece_index,
             SQUARE_INDEX(destination_rank, destination_file));
-        if (!(move.castling_rights_lost & castling_right_lost))
-        {
-            move.castling_rights_lost |= castling_right_lost;
-            move.reset_draw_by_50_count |= castling_right_lost;
-        }
-        switch (status)
-        {
-        case MOVE_ATTEMPT_MOVE:
-        {
-            add_move(position, &move);
-            break;
-        }
-        case MOVE_ATTEMPT_CAPTURE:
-        {
-            add_move(position, &move);
-        }
-        case MOVE_ATTEMPT_FAILURE:
+        if (status == MOVE_ATTEMPT_OBSTRUCTION)
         {
             return;
         }
+        if (status != MOVE_ATTEMPT_HANG)
+        {
+            if (!(move.castling_rights_lost & castling_right_lost))
+            {
+                move.castling_rights_lost |= castling_right_lost;
+                move.reset_draw_by_50_count |= castling_right_lost;
+            }
+            add_move(position, &move, get_king_safety_evaluation(&move, control_counts));
+            if (status == MOVE_ATTEMPT_CAPTURE)
+            {
+                return;
+            }
         }
     }
 }
@@ -1041,29 +1226,26 @@ void add_half_vertical_moves(Position*position, uint8_t piece_index, int8_t delt
         {
             break;
         }
+        int8_t control_counts[64];
         Position move;
-        MoveAttemptStatus status = move_piece_if_legal(position, &move, piece_index,
+        MoveAttemptStatus status = attempt_piece_move(position, &move, control_counts, piece_index,
             SQUARE_INDEX(destination_rank, destination_file));
-        if (!(move.castling_rights_lost & castling_right_lost))
-        {
-            move.castling_rights_lost |= castling_right_lost;
-            move.reset_draw_by_50_count |= castling_right_lost;
-        }
-        switch (status)
-        {
-        case MOVE_ATTEMPT_MOVE:
-        {
-            add_move(position, &move);
-            break;
-        }
-        case MOVE_ATTEMPT_CAPTURE:
-        {
-            add_move(position, &move);
-        }
-        case MOVE_ATTEMPT_FAILURE:
+        if (status == MOVE_ATTEMPT_OBSTRUCTION)
         {
             return;
         }
+        if (status != MOVE_ATTEMPT_HANG)
+        {
+            if (!(move.castling_rights_lost & castling_right_lost))
+            {
+                move.castling_rights_lost |= castling_right_lost;
+                move.reset_draw_by_50_count |= castling_right_lost;
+            }
+            add_move(position, &move, get_king_safety_evaluation(&move, control_counts));
+            if (status == MOVE_ATTEMPT_CAPTURE)
+            {
+                return;
+            }
         }
     }
 }
@@ -1074,24 +1256,6 @@ void add_moves_along_axes(Position*position, uint8_t piece_index, uint8_t castli
     add_half_horizontal_moves(position, piece_index, -1, castling_right_lost);
     add_half_vertical_moves(position, piece_index, 1, castling_right_lost);
     add_half_vertical_moves(position, piece_index, -1, castling_right_lost);
-}
-
-size_t add_king_move_ranks_or_files(uint8_t move_ranks_or_files[3], uint8_t king_rank_or_file)
-{
-    size_t count = 0;
-    if (king_rank_or_file > 0)
-    {
-        move_ranks_or_files[count] = king_rank_or_file - 1;
-        ++count;
-    }
-    move_ranks_or_files[count] = king_rank_or_file;
-    ++count;
-    if (king_rank_or_file < 7)
-    {
-        move_ranks_or_files[count] = king_rank_or_file + 1;
-        ++count;
-    }
-    return count;
 }
 
 void propagate_evaluation_to_transpositions(PositionTreeNode*node)
@@ -1181,114 +1345,75 @@ void get_moves(Position*position)
             {
                 for (size_t file_index = 0; file_index < move_file_count; ++file_index)
                 {
+                    int8_t control_counts[64];
                     Position move;
-                    if (move_piece_if_legal(position, &move, piece_index,
+                    switch (attempt_piece_move(position, &move, control_counts, piece_index,
                         SQUARE_INDEX(move_ranks[rank_index], move_files[file_index])))
+                    {
+                    case MOVE_ATTEMPT_MOVE:
+                    case MOVE_ATTEMPT_CAPTURE:
                     {
                         move.castling_rights_lost |= castling_rights_lost;
                         move.reset_draw_by_50_count |= reset_draw_by_50_count;
-                        add_move(position, &move);
+                        add_move(position, &move,
+                            get_king_safety_evaluation(&move, control_counts));
+                    }
                     }
                 }
             }
-            if (!player_attacks_king_square(position, !position->active_player_index,
-                piece.square_index))
+            if (!(position->castling_rights_lost &
+                (1 << (position->active_player_index << 1))) &&
+                position->squares[piece.square_index - 1] == NULL_PIECE &&
+                position->squares[piece.square_index - 2] == NULL_PIECE &&
+                position->squares[piece.square_index - 3] == NULL_PIECE)
             {
-                if (!(position->castling_rights_lost &
-                        (1 << (position->active_player_index << 1))) &&
-                    position->squares[piece.square_index - 1] == NULL_PIECE &&
-                    position->squares[piece.square_index - 2] == NULL_PIECE &&
-                    position->squares[piece.square_index - 3] == NULL_PIECE &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index - 1) &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index - 2))
+                Position move;
+                copy_position(position, &move);
+                move_piece(&move, piece_index, piece.square_index - 2);
+                move_piece(&move, position->squares[piece.square_index - 4],
+                    piece.square_index - 1);
+                int8_t control_counts[64] = { 0 };
+                increment_square_control_counts(&move, control_counts, move.active_player_index);
+                if (!control_counts[piece.square_index] &&
+                    !control_counts[piece.square_index - 1] &&
+                    !control_counts[piece.square_index - 2])
                 {
-                    Position move;
-                    copy_position(position, &move);
-                    move_piece(&move, piece_index, piece.square_index - 2);
-                    move_piece(&move, position->squares[piece.square_index - 4],
-                        piece.square_index - 1);
                     move.castling_rights_lost |= castling_rights_lost;
                     move.reset_draw_by_50_count = true;
-                    add_move(position, &move);
+                    add_move(position, &move, get_king_safety_evaluation(&move, control_counts));
                 }
-                if (!(position->castling_rights_lost &
-                        (0b10 << (position->active_player_index << 1))) &&
-                    position->squares[piece.square_index + 1] == NULL_PIECE &&
-                    position->squares[piece.square_index + 2] == NULL_PIECE &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index + 1) &&
-                    !player_attacks_king_square(position, !position->active_player_index,
-                        piece.square_index + 2))
+            }
+            if (!(position->castling_rights_lost &
+                (0b10 << (position->active_player_index << 1))) &&
+                position->squares[piece.square_index + 1] == NULL_PIECE &&
+                position->squares[piece.square_index + 2] == NULL_PIECE)
+            {
+                Position move;
+                copy_position(position, &move);
+                move_piece(&move, piece_index, piece.square_index + 2);
+                move_piece(&move, position->squares[piece.square_index + 3],
+                    piece.square_index + 1);
+                int8_t control_counts[64] = { 0 };
+                increment_square_control_counts(&move, control_counts, move.active_player_index);
+                if (!control_counts[piece.square_index] &&
+                    !control_counts[piece.square_index + 1] &&
+                    !control_counts[piece.square_index + 2])
                 {
-                    Position move;
-                    copy_position(position, &move);
-                    move_piece(&move, piece_index, piece.square_index + 2);
-                    move_piece(&move, position->squares[piece.square_index + 3],
-                        piece.square_index + 1);
                     move.castling_rights_lost |= castling_rights_lost;
                     move.reset_draw_by_50_count = true;
-                    add_move(position, &move);
+                    add_move(position, &move, get_king_safety_evaluation(&move, control_counts));
                 }
             }
             break;
         }
         case PIECE_KNIGHT:
         {
-            uint8_t rank = RANK(piece.square_index);
-            uint8_t file = FILE(piece.square_index);
-            if (file > 0)
+            uint8_t destination_square_indices[8];
+            size_t square_count = add_knight_destination_square_indices(destination_square_indices,
+                piece.square_index);
+            for (size_t i = 0; i < square_count; ++i)
             {
-                if (rank > 1)
-                {
-                    move_piece_and_add_as_move(position, piece_index,
-                        SQUARE_INDEX(rank - 2, file - 1));
-                }
-                if (rank < 6)
-                {
-                    move_piece_and_add_as_move(position, piece_index,
-                        SQUARE_INDEX(rank + 2, file - 1));
-                }
-                if (file > 1)
-                {
-                    if (rank > 0)
-                    {
-                        move_piece_and_add_as_move(position, piece_index,
-                            SQUARE_INDEX(rank - 1, file - 2));
-                    }
-                    if (rank < 7)
-                    {
-                        move_piece_and_add_as_move(position, piece_index,
-                            SQUARE_INDEX(rank + 1, file - 2));
-                    }
-                }
-            }
-            if (file < 7)
-            {
-                if (rank > 1)
-                {
-                    move_piece_and_add_as_move(position, piece_index,
-                        SQUARE_INDEX(rank - 2, file + 1));
-                }
-                if (rank < 6)
-                {
-                    move_piece_and_add_as_move(position, piece_index,
-                        SQUARE_INDEX(rank + 2, file + 1));
-                }
-                if (file < 6)
-                {
-                    if (rank > 0)
-                    {
-                        move_piece_and_add_as_move(position, piece_index,
-                            SQUARE_INDEX(rank - 1, file + 2));
-                    }
-                    if (rank < 7)
-                    {
-                        move_piece_and_add_as_move(position, piece_index,
-                            SQUARE_INDEX(rank + 1, file + 2));
-                    }
-                }
+                move_piece_and_add_as_move(position, piece_index, destination_square_indices[i]);
             }
             break;
         }
@@ -1361,7 +1486,10 @@ void get_moves(Position*position)
     int16_t new_evaluation;
     if (node->is_leaf)
     {
-        if (player_is_checked(position, position->active_player_index))
+        int8_t control_counts[64] = { 0 };
+        increment_square_control_counts(position, control_counts, !position->active_player_index);
+        if (control_counts
+            [position->pieces[PLAYER_PIECES_INDEX(position->active_player_index)].square_index])
         {
             new_evaluation = PLAYER_WIN(!position->active_player_index);
         }
@@ -1379,12 +1507,11 @@ void get_moves(Position*position)
         {
             if (move_node->is_canonical)
             {
-                move_node->evaluation = 0;
                 Position move;
                 decompress_position(&move, move_node_index);
                 for (size_t player_index = 0; player_index < 2; ++player_index)
                 {
-                    int16_t point = FORWARD_DELTA(!player_index);
+                    int16_t point = 32 * FORWARD_DELTA(!player_index);
                     Piece*player_pieces = move.pieces + PLAYER_PIECES_INDEX(player_index);
                     for (size_t piece_index = 0; piece_index < 16; ++piece_index)
                     {
@@ -1624,7 +1751,7 @@ bool make_position_current(void)
     g_position_tree_nodes->moves_have_been_found = false;
     g_position_tree_nodes->is_canonical = true;
     g_position_tree_nodes->evaluation_has_been_propagated_to_parents = true;
-    compress_position_to_node(position);
+    compress_position_to_node(position, 0);
     g_position_tree_nodes->parent_index = NULL_POSITION_TREE_NODE;
     SET_PREVIOUS_LEAF_INDEX(g_position_tree_nodes, NULL_POSITION_TREE_NODE);
     SET_NEXT_LEAF_INDEX(g_position_tree_nodes, NULL_POSITION_TREE_NODE);
@@ -1633,7 +1760,6 @@ bool make_position_current(void)
     get_moves(position);
     g_next_leaf_to_evaluate_index = g_first_leaf_index;
     g_selected_piece_index = NULL_PIECE;
-    g_run_engine = true;
     return archive_position(&g_position_tree_nodes->position);
 }
 
@@ -1718,7 +1844,7 @@ GUIAction end_turn(void)
             }
         }
         ++g_draw_by_50_count;
-        g_run_engine = true;
+        g_run_engine = g_active_player_index == g_engine_player_index;
         return ACTION_REDRAW;
     }
     else
@@ -1795,24 +1921,6 @@ GUIAction do_engine_iteration(void)
         }
     }
     return ACTION_NONE;
-}
-
-int32_t min32(int32_t a, int32_t b)
-{
-    if (a < b)
-    {
-        return a;
-    }
-    return b;
-}
-
-uint32_t max32(uint32_t a, uint32_t b)
-{
-    if (a > b)
-    {
-        return a;
-    }
-    return b;
 }
 
 Color g_black = { .value = 0xff000000 };
@@ -2747,6 +2855,7 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                 while (move.pieces[g_selected_piece_index].piece_type != selected_piece_type)
                 {
                     g_selected_move_node_index = move_node->next_move_node_index;
+                    decompress_position(&move, move_node->next_move_node_index);
                     move_node = GET_POSITION_TREE_NODE(move_node->next_move_node_index);
                 }
                 end_turn();
@@ -2758,32 +2867,37 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                     g_current_position[g_active_player_index].pieces[g_selected_piece_index];
                 uint8_t square_index =
                     SCREEN_SQUARE_INDEX(id - window->controls[MAIN_WINDOW_BOARD].base_id);
-                if (current_position_selected_piece.square_index != square_index)
+                uint16_t piece_first_move_node_index = g_selected_move_node_index;
+                do
                 {
-                    uint16_t piece_first_move_node_index = g_selected_move_node_index;
-                    do
+                    Position move;
+                    decompress_position(&move, g_selected_move_node_index);
+                    uint8_t move_source_square =
+                        move.squares[current_position_selected_piece.square_index];
+                    if (PLAYER_INDEX(move_source_square) == g_active_player_index &&
+                        move.pieces[move_source_square].piece_type ==
+                        current_position_selected_piece.piece_type)
                     {
-                        Position move;
-                        decompress_position(&move, g_selected_move_node_index);
-                        uint8_t destination_square = move.squares[square_index];
-                        if (PLAYER_INDEX(destination_square) == g_active_player_index)
+                        break;
+                    }
+                    uint8_t destination_square = move.squares[square_index];
+                    if (PLAYER_INDEX(destination_square) == g_active_player_index)
+                    {
+                        PieceType moved_piece_type = move.pieces[destination_square].piece_type;
+                        if (moved_piece_type == current_position_selected_piece.piece_type)
                         {
-                            PieceType moved_piece_type = move.pieces[destination_square].piece_type;
-                            if (moved_piece_type == current_position_selected_piece.piece_type)
-                            {
-                                if (current_position_selected_piece.piece_type != moved_piece_type)
-                                {
-                                    g_is_promoting = true;
-                                    return ACTION_REDRAW;
-                                }
-                                return end_turn();
-                            }
+                            return end_turn();
                         }
-                        g_selected_move_node_index = GET_POSITION_TREE_NODE(g_selected_move_node_index)->
-                            next_move_node_index;
-                    } while (g_selected_move_node_index != NULL_POSITION_TREE_NODE);
-                    g_selected_move_node_index = piece_first_move_node_index;
-                }
+                        else
+                        {
+                            g_is_promoting = true;
+                            return ACTION_REDRAW;
+                        }
+                    }
+                    g_selected_move_node_index = GET_POSITION_TREE_NODE(g_selected_move_node_index)->
+                        next_move_node_index;
+                } while (g_selected_move_node_index != NULL_POSITION_TREE_NODE);
+                g_selected_move_node_index = piece_first_move_node_index;
             }
         }
     }
@@ -2899,19 +3013,23 @@ void draw_player(int32_t captured_pieces_min_y, int32_t timer_text_origin_y, uin
             }
         }
     }
-    int32_t captured_piece_min_x = board->board.min_x;
-    uint8_t*player_captured_piece_counts = g_captured_piece_counts[player_index];
-    PieceType captured_piece_type_order[] =
-    { PIECE_QUEEN, PIECE_ROOK, PIECE_BISHOP, PIECE_KNIGHT, PIECE_PAWN };
-    for (size_t piece_type_index = 0; piece_type_index < ARRAY_COUNT(captured_piece_type_order);
-        ++piece_type_index)
+    if (draw_captured_pieces)
     {
-        PieceType piece_type = captured_piece_type_order[piece_type_index];
-        size_t count = player_captured_piece_counts[piece_type];
-        for (size_t i = 0; i < count; ++i)
+        int32_t captured_piece_min_x = board->board.min_x;
+        uint8_t*player_captured_piece_counts = g_captured_piece_counts[player_index];
+        PieceType captured_piece_type_order[] =
+        { PIECE_QUEEN, PIECE_ROOK, PIECE_BISHOP, PIECE_KNIGHT, PIECE_PAWN };
+        for (size_t piece_type_index = 0; piece_type_index < ARRAY_COUNT(captured_piece_type_order);
+            ++piece_type_index)
         {
-            draw_icon(window, captured_piece_min_x, captured_pieces_min_y, player_index, piece_type);
-            captured_piece_min_x += window->dpi_data->square_size / 2;
+            PieceType piece_type = captured_piece_type_order[piece_type_index];
+            size_t count = player_captured_piece_counts[piece_type];
+            for (size_t i = 0; i < count; ++i)
+            {
+                draw_icon(window, captured_piece_min_x, captured_pieces_min_y, player_index,
+                    piece_type);
+                captured_piece_min_x += window->dpi_data->square_size / 2;
+            }
         }
     }
     uint64_t time = g_seconds_left[player_index];
@@ -3149,7 +3267,7 @@ bool load_game(void*file_memory, uint32_t file_size)
     g_seconds_left[!g_active_player_index] =
         g_times_left_as_of_last_move[!g_active_player_index] / g_counts_per_second;
     g_last_move_time = get_time() - time_since_last_move;
-    g_run_engine = true;
+    g_run_engine = g_active_player_index == g_engine_player_index;
     return true;
 }
 
@@ -3200,7 +3318,7 @@ void init_new_game(void)
     window->hovered_control_id = NULL_CONTROL;
     window->clicked_control_id = NULL_CONTROL;
     g_draw_by_50_count = 0;
-    g_run_engine = true;
+    g_run_engine = g_active_player_index == g_engine_player_index;
     g_is_promoting = false;
     memset(g_captured_piece_counts, 0, sizeof(g_captured_piece_counts));
     g_times_left_as_of_last_move[0] = g_counts_per_second * g_seconds_left[0];
