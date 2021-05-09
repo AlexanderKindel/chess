@@ -2863,41 +2863,46 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
             }
             else
             {
+                Position*current_position = g_current_position + g_active_player_index;
                 Piece current_position_selected_piece =
-                    g_current_position[g_active_player_index].pieces[g_selected_piece_index];
+                    current_position->pieces[g_selected_piece_index];
                 uint8_t square_index =
                     SCREEN_SQUARE_INDEX(id - window->controls[MAIN_WINDOW_BOARD].base_id);
-                uint16_t piece_first_move_node_index = g_selected_move_node_index;
-                do
+                if (PLAYER_INDEX(current_position->squares[square_index]) != g_active_player_index)
                 {
-                    Position move;
-                    decompress_position(&move, g_selected_move_node_index);
-                    uint8_t move_source_square =
-                        move.squares[current_position_selected_piece.square_index];
-                    if (PLAYER_INDEX(move_source_square) == g_active_player_index &&
-                        move.pieces[move_source_square].piece_type ==
-                        current_position_selected_piece.piece_type)
+                    uint16_t piece_first_move_node_index = g_selected_move_node_index;
+                    do
                     {
-                        break;
-                    }
-                    uint8_t destination_square = move.squares[square_index];
-                    if (PLAYER_INDEX(destination_square) == g_active_player_index)
-                    {
-                        PieceType moved_piece_type = move.pieces[destination_square].piece_type;
-                        if (moved_piece_type == current_position_selected_piece.piece_type)
+                        Position move;
+                        decompress_position(&move, g_selected_move_node_index);
+                        uint8_t move_source_square =
+                            move.squares[current_position_selected_piece.square_index];
+                        if (PLAYER_INDEX(move_source_square) == g_active_player_index &&
+                            move.pieces[move_source_square].piece_type ==
+                            current_position_selected_piece.piece_type)
                         {
-                            return end_turn();
+                            break;
                         }
-                        else
+                        uint8_t destination_square = move.squares[square_index];
+                        if (PLAYER_INDEX(destination_square) == g_active_player_index)
                         {
-                            g_is_promoting = true;
-                            return ACTION_REDRAW;
+                            PieceType moved_piece_type = move.pieces[destination_square].piece_type;
+                            if (moved_piece_type == current_position_selected_piece.piece_type)
+                            {
+                                return end_turn();
+                            }
+                            else
+                            {
+                                g_is_promoting = true;
+                                return ACTION_REDRAW;
+                            }
                         }
-                    }
-                    g_selected_move_node_index = GET_POSITION_TREE_NODE(g_selected_move_node_index)->
-                        next_move_node_index;
-                } while (g_selected_move_node_index != NULL_POSITION_TREE_NODE);
-                g_selected_move_node_index = piece_first_move_node_index;
+                        g_selected_move_node_index =
+                            GET_POSITION_TREE_NODE(g_selected_move_node_index)->
+                                next_move_node_index;
+                    } while (g_selected_move_node_index != NULL_POSITION_TREE_NODE);
+                    g_selected_move_node_index = piece_first_move_node_index;
+                }
             }
         }
     }
