@@ -302,6 +302,21 @@ bool g_is_promoting;
 #ifdef DEBUG
 #define ASSERT(condition) if (!(condition)) *((int*)0) = 0
 
+void export_position_tree(void)
+{
+    if (g_active_player_index == g_engine_player_index)
+    {
+        HANDLE file_handle = CreateFileA("move_tree", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+        if (file_handle != INVALID_HANDLE_VALUE)
+        {
+            DWORD bytes_written;
+            WriteFile(file_handle, g_position_tree_nodes, sizeof(g_position_tree_nodes),
+                &bytes_written, 0);
+            CloseHandle(file_handle);
+        }
+    }
+}
+
 PositionTreeNode*get_position_tree_node(uint16_t node_index)
 {
     ASSERT(node_index != NULL_POSITION_TREE_NODE);
@@ -344,6 +359,7 @@ void set_first_move_node_index(PositionTreeNode*node, uint16_t value)
     node->first_move_node_index = value;
 }
 
+#define EXPORT_POSITION_TREE() export_position_tree()
 #define GET_POSITION_TREE_NODE(node_index) get_position_tree_node(node_index)
 #define GET_PREVIOUS_LEAF_INDEX(node) get_previous_leaf_index(node)
 #define GET_NEXT_LEAF_INDEX(position_tree_node) get_next_leaf_index(position_tree_node)
@@ -1796,6 +1812,7 @@ GUIAction end_turn(void)
     }
     g_seconds_left[g_active_player_index] = *time_left_as_of_last_move / g_counts_per_second;
     g_last_move_time = move_time;
+    EXPORT_POSITION_TREE();
     g_selected_piece_index = NULL_PIECE;
     uint8_t*player_captured_piece_counts = g_captured_piece_counts[!g_active_player_index];
     uint8_t player_pieces_index = PLAYER_PIECES_INDEX(!g_active_player_index);
@@ -2887,11 +2904,12 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                         if (PLAYER_INDEX(destination_square) == g_active_player_index)
                         {
                             PieceType moved_piece_type = move.pieces[destination_square].piece_type;
-                            if (moved_piece_type == current_position_selected_piece.piece_type)
+                            if (move.pieces[destination_square].piece_type ==
+                                current_position_selected_piece.piece_type)
                             {
                                 return end_turn();
                             }
-                            else
+                            else if (current_position_selected_piece.piece_type == PIECE_PAWN)
                             {
                                 g_is_promoting = true;
                                 return ACTION_REDRAW;

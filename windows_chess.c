@@ -575,7 +575,7 @@ HWND windows_init(void)
     CloseHandle(file_handle);
     init(font_data, text_font_data_size, icon_font_file_size.QuadPart);
     g_status_data.text = "";
-    init_start_window(g_status_data.text, GetDpiForWindow(dialog_handle));
+    init_start_window(g_status_data.text, dpi);
     run_dialog(g_windows + WINDOW_START, dialog_handle, 0);
     if (g_status_data.status == START_QUIT)
     {
