@@ -369,6 +369,7 @@ void set_first_move_node_index(PositionTreeNode*node, uint16_t value)
 #define SET_FIRST_MOVE_NODE_INDEX(node, value) set_first_move_node_index(node, value)
 #else
 #define ASSERT(condition)
+#define EXPORT_POSITION_TREE()
 #define GET_POSITION_TREE_NODE(node_index) (g_position_tree_nodes + (node_index))
 #define GET_PREVIOUS_LEAF_INDEX(position_tree_node) (position_tree_node)->previous_leaf_index
 #define GET_NEXT_LEAF_INDEX(position_tree_node) (position_tree_node)->next_leaf_index
@@ -493,6 +494,33 @@ bool archive_position(CompressedPosition*position)
     return true;
 }
 
+typedef enum Direction
+{
+    DIRECTION_N,
+    DIRECTION_E,
+    DIRECTION_S,
+    DIRECTION_W,
+    DIRECTION_NE,
+    DIRECTION_SE,
+    DIRECTION_SW,
+    DIRECTION_NW,
+    DIRECTION_NNE,
+    DIRECTION_ENE,
+    DIRECTION_ESE,
+    DIRECTION_SSE,
+    DIRECTION_SSW,
+    DIRECTION_WSW,
+    DIRECTION_WNW,
+    DIRECTION_NNW
+} Direction;
+
+int8_t g_direction_deltas[16][2] = { [DIRECTION_N] = { 1, 0 },[DIRECTION_E] = { 0, 1 },
+[DIRECTION_S] = { -1, 0 },[DIRECTION_W] = { 0, -1 },[DIRECTION_NE] = { 1, 1 },
+[DIRECTION_SE] = { -1, 1 },[DIRECTION_SW] = { -1, -1 },[DIRECTION_NW] = { 1, -1 },
+[DIRECTION_NNE] = { 2, 1 },[DIRECTION_ENE] = { 1, 2 },[DIRECTION_ESE] = { -1, 2 },
+[DIRECTION_SSE] = { -2, 1 },[DIRECTION_SSW] = { -2, -1 },[DIRECTION_WSW] = { -1, -2 },
+[DIRECTION_WNW] = { 1, -2 },[DIRECTION_NNW] = { 2, -1 } };
+
 void increment_control_counts_along_half_diagonal(Position*position, int8_t control_counts[64],
     uint8_t piece_square_index, uint8_t player_index, int8_t rank_delta, int8_t file_delta)
 {
@@ -596,54 +624,15 @@ size_t add_knight_destination_square_indices(uint8_t destination_square_indices[
     size_t count = 0;
     uint8_t rank = RANK(knight_square_index);
     uint8_t file = FILE(knight_square_index);
-    if (file > 0)
+    for (Direction direction = 8; direction < 16; ++direction)
     {
-        if (rank > 1)
+        uint8_t destination_rank = rank + g_direction_deltas[direction][0];
+        if (destination_rank < 8)
         {
-            destination_square_indices[count] = SQUARE_INDEX(rank - 2, file - 1);
-            ++count;
-        }
-        if (rank < 6)
-        {
-            destination_square_indices[count] = SQUARE_INDEX(rank + 2, file - 1);
-            ++count;
-        }
-        if (file > 1)
-        {
-            if (rank > 0)
+            uint8_t destination_file = file + g_direction_deltas[direction][1];
+            if (destination_file < 8)
             {
-                destination_square_indices[count] = SQUARE_INDEX(rank - 1, file - 2);
-                ++count;
-            }
-            if (rank < 7)
-            {
-                destination_square_indices[count] = SQUARE_INDEX(rank + 1, file - 2);
-                ++count;
-            }
-        }
-    }
-    if (file < 7)
-    {
-        if (rank > 1)
-        {
-            destination_square_indices[count] = SQUARE_INDEX(rank - 2, file + 1);
-            ++count;
-        }
-        if (rank < 6)
-        {
-            destination_square_indices[count] = SQUARE_INDEX(rank + 2, file + 1);
-            ++count;
-        }
-        if (file < 6)
-        {
-            if (rank > 0)
-            {
-                destination_square_indices[count] = SQUARE_INDEX(rank - 1, file + 2);
-                ++count;
-            }
-            if (rank < 7)
-            {
-                destination_square_indices[count] = SQUARE_INDEX(rank + 1, file + 2);
+                destination_square_indices[count] = SQUARE_INDEX(destination_rank, destination_file);
                 ++count;
             }
         }
@@ -1154,12 +1143,14 @@ void add_diagonal_pawn_move(Position*position, uint8_t piece_index, uint8_t file
     }
 }
 
-void add_half_diagonal_moves(Position*position, uint8_t piece_index, int8_t rank_delta,
-    int8_t file_delta)
+void add_moves_in_direction(Position*position, Direction direction, uint8_t piece_index,
+    uint8_t castling_right_lost)
 {
     uint8_t destination_square_index = position->pieces[piece_index].square_index;
     uint8_t destination_rank = RANK(destination_square_index);
     uint8_t destination_file = FILE(destination_square_index);
+    int8_t rank_delta = g_direction_deltas[direction][0];
+    int8_t file_delta = g_direction_deltas[direction][1];
     while (true)
     {
         destination_rank += rank_delta;
@@ -1171,76 +1162,6 @@ void add_half_diagonal_moves(Position*position, uint8_t piece_index, int8_t rank
         if (destination_file > 7)
         {
             return;
-        }
-        switch (move_piece_and_add_as_move(position, piece_index,
-            SQUARE_INDEX(destination_rank, destination_file)))
-        {
-        case MOVE_ATTEMPT_CAPTURE:
-        case MOVE_ATTEMPT_OBSTRUCTION:
-        {
-            return;
-        }
-        }
-    }
-}
-
-void add_diagonal_moves(Position*position, uint8_t piece_index)
-{
-    add_half_diagonal_moves(position, piece_index, 1, 1);
-    add_half_diagonal_moves(position, piece_index, 1, -1);
-    add_half_diagonal_moves(position, piece_index, -1, 1);
-    add_half_diagonal_moves(position, piece_index, -1, -1);
-}
-
-void add_half_horizontal_moves(Position*position, uint8_t piece_index, int8_t delta,
-    uint8_t castling_right_lost)
-{
-    uint8_t destination_square_index = position->pieces[piece_index].square_index;
-    uint8_t destination_rank = RANK(destination_square_index);
-    uint8_t destination_file = FILE(destination_square_index);
-    while (true)
-    {
-        destination_file += delta;
-        if (destination_file > 7)
-        {
-            return;
-        }
-        int8_t control_counts[64];
-        Position move;
-        MoveAttemptStatus status = attempt_piece_move(position, &move, control_counts, piece_index,
-            SQUARE_INDEX(destination_rank, destination_file));
-        if (status == MOVE_ATTEMPT_OBSTRUCTION)
-        {
-            return;
-        }
-        if (status != MOVE_ATTEMPT_HANG)
-        {
-            if (!(move.castling_rights_lost & castling_right_lost))
-            {
-                move.castling_rights_lost |= castling_right_lost;
-                move.reset_draw_by_50_count |= castling_right_lost;
-            }
-            add_move(position, &move, get_king_safety_evaluation(&move, control_counts));
-            if (status == MOVE_ATTEMPT_CAPTURE)
-            {
-                return;
-            }
-        }
-    }
-}
-
-void add_half_vertical_moves(Position*position, uint8_t piece_index, int8_t delta,
-    uint8_t castling_right_lost)
-{
-    uint8_t destination_square_index = position->pieces[piece_index].square_index;
-    uint8_t destination_rank = RANK(destination_square_index);
-    uint8_t destination_file = FILE(destination_square_index);
-    while (true)
-    {
-        destination_rank += delta;
-        if (destination_rank > 7)
-        {
-            break;
         }
         int8_t control_counts[64];
         Position move;
@@ -1268,10 +1189,18 @@ void add_half_vertical_moves(Position*position, uint8_t piece_index, int8_t delt
 
 void add_moves_along_axes(Position*position, uint8_t piece_index, uint8_t castling_right_lost)
 {
-    add_half_horizontal_moves(position, piece_index, 1, castling_right_lost);
-    add_half_horizontal_moves(position, piece_index, -1, castling_right_lost);
-    add_half_vertical_moves(position, piece_index, 1, castling_right_lost);
-    add_half_vertical_moves(position, piece_index, -1, castling_right_lost);
+    for (size_t direction = 0; direction < 4; ++direction)
+    {
+        add_moves_in_direction(position, direction, piece_index, castling_right_lost);
+    }
+}
+
+void add_diagonal_moves(Position*position, uint8_t piece_index)
+{
+    for (size_t direction = 4; direction < 8; ++direction)
+    {
+        add_moves_in_direction(position, direction, piece_index, 0);
+    }
 }
 
 void propagate_evaluation_to_transpositions(PositionTreeNode*node)
@@ -2778,7 +2707,7 @@ void draw_start_window(char*text)
 
 #define DRAW_BY_50_CAN_BE_CLAIMED() (g_draw_by_50_count > 100)
 
-bool main_window_handle_left_mouse_button_down(int32_t cursor_x, int32_t cursor_y)
+bool main_window_handle_left_mouse_button_down(void)
 {
     Window*window = g_windows + WINDOW_MAIN;
     window->clicked_control_id = window->hovered_control_id;
@@ -2904,12 +2833,11 @@ GUIAction main_window_handle_left_mouse_button_up(int32_t cursor_x, int32_t curs
                         if (PLAYER_INDEX(destination_square) == g_active_player_index)
                         {
                             PieceType moved_piece_type = move.pieces[destination_square].piece_type;
-                            if (move.pieces[destination_square].piece_type ==
-                                current_position_selected_piece.piece_type)
+                            if (moved_piece_type == current_position_selected_piece.piece_type)
                             {
                                 return end_turn();
                             }
-                            else if (current_position_selected_piece.piece_type == PIECE_PAWN)
+                            else
                             {
                                 g_is_promoting = true;
                                 return ACTION_REDRAW;

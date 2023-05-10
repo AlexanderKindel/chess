@@ -467,7 +467,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     case WM_LBUTTONDOWN:
     {
         SetCapture(window_handle);
-        if (main_window_handle_left_mouse_button_down(GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)))
+        if (main_window_handle_left_mouse_button_down())
         {
             draw_and_render_main_window(window_handle);
         }
